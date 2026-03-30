@@ -1,22 +1,41 @@
-"""Thin wrapper around the kraken CLI binary."""
+"""
+Thin wrapper around the kraken CLI binary.
+Returns raw JSON dicts — callers are responsible for parsing.
+"""
+from __future__ import annotations
 import json
 import subprocess
 
 
 def _run(args: list[str]) -> dict:
-    """Run a kraken CLI command and return parsed JSON output."""
     result = subprocess.run(
         ["kraken"] + args + ["-o", "json"],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
         try:
-            error = json.loads(result.stdout)
+            err = json.loads(result.stdout)
         except Exception:
-            error = {"error": result.stderr or result.stdout}
-        raise RuntimeError(f"kraken command failed: {error}")
+            err = {"error": result.stderr or result.stdout}
+        raise RuntimeError(f"kraken {' '.join(args)} failed: {err}")
     return json.loads(result.stdout)
+
+
+# --- Market data (public) ---
+
+def fetch_ohlc(pair: str, interval: int = 1) -> dict:
+    """Returns raw OHLC dict: {'XXBTZUSD': [[ts,o,h,l,c,vwap,vol,count],...], 'last': ...}"""
+    return _run(["ohlc", pair, "--interval", str(interval)])
+
+
+def fetch_orderbook(pair: str) -> dict:
+    """Returns raw orderbook: {'XXBTZUSD': {'bids': [[price,vol,ts],...], 'asks': [...]}}"""
+    return _run(["orderbook", pair])
+
+
+def fetch_ticker(pair: str) -> dict:
+    """Returns raw ticker dict with 'a','b','c','h','l','o','p','t','v' keys."""
+    return _run(["ticker", pair])
 
 
 # --- Paper trading ---
@@ -37,25 +56,11 @@ def paper_status() -> dict:
     return _run(["paper", "status"])
 
 
-# --- Market data (public, no auth required) ---
-
-def ticker(pair: str) -> dict:
-    return _run(["market", "ticker", pair])
-
-
-def ohlc(pair: str, interval: int = 60) -> dict:
-    return _run(["market", "ohlc", pair, "--interval", str(interval)])
-
-
-def orderbook(pair: str) -> dict:
-    return _run(["market", "orderbook", pair])
-
-
 # --- Account (requires API key) ---
 
 def balance() -> dict:
-    return _run(["account", "balance"])
+    return _run(["balance"])
 
 
 def positions() -> dict:
-    return _run(["account", "positions"])
+    return _run(["positions"])
