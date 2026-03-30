@@ -1,113 +1,123 @@
-"""
-Overextension short strategy for crypto — adapted from ES live_candidate_v1.
-
-Original (ES futures, 1-second bars):
-  Signal:  range_pos >= 0.85  AND  vwap_dev_ticks >= 50  (top-of-range + far above VWAP)
-  Cluster: first signal only per 15-minute cluster
-  Entry:   delayed 1 bar (next second)
-  Gates:   no power-hour  |  spread <= 1 tick  |  signedvol_sum30s <= 250 (or <= 100 at cash open)
-  Exit:    fail-fast in 3 minutes if [no +1-tick progress AND buy-flow > thresh AND OBI bullish]
-           else hold up to 30 minutes
-
-Crypto adaptations (1-minute bars):
-  - VWAP dev expressed as % instead of ticks (0.25% ≈ ES 50-tick threshold at ~5000)
-  - Signed volume: OHLC-approximated (volume × sign(close - open)) per bar
-  - Spread: % of mid instead of ticks
-  - No power-hour exclusion (24/7 market); use a "first hour" gate instead
-  - Cluster gap: 15 bars (minutes) | Fail-fast window: 3 bars (minutes)
-  - Signed vol sum: 30 bars = 30 minutes (same concept as 30s at 1s bars)
-  - SV gate normalized as a rolling ratio (avoids absolute-volume calibration to BTC)
-"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
 import numpy as np
 import pandas as pd
 
 
-# ---------------------------------------------------------------------------
-# Parameters
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class StrategyConfig:
+    ema_fast_span: int = 8
+    ema_slow_span: int = 21
+    atr_window: int = 14
+    compression_window: int = 6
+    compression_baseline_window: int = 24
+    impulse_window: int = 12
+    trigger_window: int = 2
+    breakout_window: int = 12
+    min_trend_strength: float = 0.0020
+    min_momentum_medium: float = 0.0150
+    min_impulse_pct: float = 0.0000
+    min_pullback_depth: float = 0.0000
+    max_pullback_depth: float = 0.0300
+    support_vwap_low: float = -0.0040
+    support_vwap_high: float = 0.0020
+    max_extension_after_reclaim: float = 0.0055
+    max_compression_ratio: float = 0.90
+    min_close_location: float = 0.70
+    min_volume_ratio: float = 1.00
+    max_volume_ratio: float = 10.00
+    deep_pullback_min_vwap: float = -0.0120
+    deep_pullback_max_vwap: float = -0.0030
+    stop_atr_multiple: float = 1.10
+    swing_stop_buffer_pct: float = 0.0015
+    min_stop_pct: float = 0.0150
+    reward_to_risk: float = 0.0
+    target_pct: float = 0.0450
+    trailing_activation_pct: float = 0.0200
+    trailing_stop_pct: float = 0.0075
+    max_hold_bars: int = 5
+    fast_max_hold_bars: int = 3
+    min_hold_bars: int = 1
+    no_progress_bars: int = 2
+    no_progress_min_pct: float = 0.0015
+    fast_no_progress_bars: int = 1
+    fast_no_progress_min_pct: float = 0.0008
+    cooldown_bars: int = 1
 
-RANGE_POS_MIN = 0.85          # price must be in top 15% of session range
-VWAP_DEV_PCT_MIN = 0.0025     # 0.25% above session VWAP  (ES equiv: 50 ticks / ~5000)
-SPREAD_PCT_MAX = 0.0002       # 0.02% spread gate         (ES equiv: 1 tick / ~5000)
-
-SV_WINDOW = 30                # rolling window (bars) for signed-volume sum
-SV_RATIO_MAX = 0.50           # net-buy ratio gate: cooldown required below this
-SV_OPEN_RATIO_MAX = 0.20      # stricter gate for "first-hour" bars (like cash_open)
-FIRST_HOUR_BARS = 60          # bars treated as session open (first 60 minutes)
-
-CLUSTER_GAP_BARS = 15         # min bars between independent signal clusters
-HOLD_BARS = 30                # max hold time in bars before forced exit
-
-FAIL_FAST_BARS = 3            # bars in which fail-fast can trigger
-FAIL_FAST_MIN_PROGRESS = 0.001 # 0.1% favorable MFE needed to avoid fail-fast
-FAIL_FAST_ADVERSE_OBI = 0.03   # OBI delta threshold (bid-heavy against a short)
-FAIL_FAST_ADVERSE_SV_RATIO = 0.0  # net-buy ratio that counts as adverse for short
+    @property
+    def warmup_bars(self) -> int:
+        return max(
+            self.ema_slow_span + 2,
+            self.atr_window + 2,
+            self.compression_baseline_window + 2,
+            self.impulse_window + 2,
+            self.breakout_window + 2,
+        )
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Bar:
-    """Single OHLCV bar with computed features."""
-    timestamp: int
-    open: float
-    high: float
-    low: float
-    close: float
-    vwap_kraken: float   # exchange-reported VWAP (used for reference only)
-    volume: float
-
-    # computed
-    mid: float = 0.0
-    signed_vol: float = 0.0
-    sv_sum30: float = 0.0
-    sv_ratio30: float = 0.0
-    session_vwap: float = 0.0
-    vwap_dev_pct: float = 0.0
-    session_high: float = 0.0
-    session_low: float = 0.0
-    range_pos: float = 0.0
+DEFAULT_CONFIG = StrategyConfig()
 
 
 @dataclass
 class Signal:
+    pair: str
     bar_idx: int
+    timestamp: int
     price: float
-    range_pos: float
-    vwap_dev_pct: float
-    sv_ratio30: float
-    spread_pct: float
-    obi: float
-    side: int = -1   # always short (-1)
+    trigger_level: float
+    support_price: float
+    trend_strength: float
+    momentum_short: float
+    momentum_medium: float
+    impulse_pct: float
+    pullback_depth_pct: float
+    support_touch_pct: float
+    distance_from_vwap: float
+    compression_ratio: float
+    reclaim_pct: float
+    close_location: float
+    volume_ratio: float
+    atr_pct: float
+    score: float
+    side: int = 1
+    signal_type: str = "pullback_trend"
 
     def describe(self) -> str:
         return (
-            f"SHORT signal at ${self.price:,.2f} | "
-            f"range_pos={self.range_pos:.2f} | "
-            f"vwap_dev={self.vwap_dev_pct:.3%} | "
-            f"sv_ratio={self.sv_ratio30:.2f} | "
-            f"spread={self.spread_pct:.4%} | "
-            f"obi={self.obi:.3f}"
+            f"{self.pair} hourly-breakout long | price=${self.price:,.6f} | "
+            f"score={self.score:.2f} | trend={self.trend_strength:.3%} | "
+            f"mom6={self.momentum_medium:.3%} | breakout={self.reclaim_pct:.3%} | "
+            f"vol={self.volume_ratio:.2f}x | close_loc={self.close_location:.2f} | "
+            f"compress={self.compression_ratio:.2f}"
         )
 
 
 @dataclass
 class Trade:
+    pair: str
     entry_bar: int
+    entry_ts: int
     entry_price: float
-    side: int = -1
-    volume: float = 0.0
+    size: float
+    stop_price: float
+    target_price: Optional[float]
+    signal_score: float
+    support_price: float
+    exit_mode: str = "standard"
+    ai_confidence: float = 0.0
+    side: int = 1
     exit_bar: Optional[int] = None
+    exit_ts: Optional[int] = None
     exit_price: Optional[float] = None
     exit_reason: str = ""
-    # MFE tracking
+    best_price: float = 0.0
     best_pct: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.best_price = self.entry_price
 
     @property
     def is_open(self) -> bool:
@@ -116,244 +126,321 @@ class Trade:
     def bars_held(self, current_bar: int) -> int:
         return current_bar - self.entry_bar
 
-    def pnl_pct(self) -> Optional[float]:
+    def current_pnl_pct(self, price: float) -> float:
+        return self.side * (price - self.entry_price) / self.entry_price
+
+    def realized_pnl_pct(self) -> Optional[float]:
         if self.exit_price is None:
             return None
-        return self.side * (self.exit_price - self.entry_price) / self.entry_price
+        return self.current_pnl_pct(self.exit_price)
 
-    def update_mfe(self, current_price: float) -> None:
-        favorable = self.side * (self.entry_price - current_price) / self.entry_price
-        self.best_pct = max(self.best_pct, favorable)
+    def update_best(self, current_price: float) -> None:
+        self.best_price = max(self.best_price, current_price)
+        self.best_pct = max(self.best_pct, self.current_pnl_pct(current_price))
 
-
-# ---------------------------------------------------------------------------
-# Feature computation
-# ---------------------------------------------------------------------------
 
 def parse_ohlc(raw: dict) -> pd.DataFrame:
-    """
-    Parse Kraken CLI ohlc JSON response.
-
-    raw: {'XXBTZUSD': [[ts, o, h, l, c, vwap, vol, count], ...], 'last': ...}
-    Returns DataFrame sorted oldest→newest.
-    """
     pair_key = next(k for k in raw if k != "last")
     bars = raw[pair_key]
-    df = pd.DataFrame(bars, columns=["ts", "open", "high", "low", "close", "vwap_k", "volume", "count"])
+    df = pd.DataFrame(
+        bars,
+        columns=["ts", "open", "high", "low", "close", "vwap_k", "volume", "count"],
+    )
     for col in ["open", "high", "low", "close", "vwap_k", "volume"]:
         df[col] = df[col].astype(float)
-    df = df.sort_values("ts").reset_index(drop=True)
-    return df
+    df["ts"] = df["ts"].astype(int)
+    return df.sort_values("ts").drop_duplicates("ts").reset_index(drop=True)
 
 
-def compute_features(df: pd.DataFrame, session_start_bar: int = 0) -> pd.DataFrame:
-    """
-    Add strategy features to an OHLC DataFrame.
-
-    session_start_bar: index of the first bar of the current session window.
-                       Features reset from this point (VWAP, range, etc.).
-    """
-    out = df.copy()
-
-    # Mid price
-    out["mid"] = out["close"]
-
-    # Signed volume: positive = net buying (close > open), negative = net selling
-    out["signed_vol"] = out["volume"] * np.sign(out["close"] - out["open"])
-
-    # Rolling 30-bar sums and ratio (session-scoped)
-    total_vol_sum = out["volume"].rolling(SV_WINDOW, min_periods=5).sum()
-    sv_sum = out["signed_vol"].rolling(SV_WINDOW, min_periods=5).sum()
-    out["sv_sum30"] = sv_sum
-    out["sv_ratio30"] = sv_sum / (total_vol_sum + 1e-12)
-
-    # Session VWAP — cumulative from session_start_bar
-    session = out.iloc[session_start_bar:].copy()
-    cum_pv = (session["close"] * session["volume"]).cumsum()
-    cum_vol = session["volume"].cumsum()
-    session_vwap = cum_pv / cum_vol.replace(0, np.nan)
-    out.loc[session_start_bar:, "session_vwap"] = session_vwap.values
-    out["session_vwap"] = out["session_vwap"].ffill()
-
-    # VWAP deviation %
-    out["vwap_dev_pct"] = (out["close"] - out["session_vwap"]) / out["session_vwap"]
-
-    # Session range — cumulative from session_start_bar
-    session_hi = out.iloc[session_start_bar:]["high"].cummax()
-    session_lo = out.iloc[session_start_bar:]["low"].cummin()
-    out.loc[session_start_bar:, "session_high"] = session_hi.values
-    out.loc[session_start_bar:, "session_low"] = session_lo.values
-    out[["session_high", "session_low"]] = out[["session_high", "session_low"]].ffill()
-
-    session_range = (out["session_high"] - out["session_low"]).replace(0, np.nan)
-    out["range_pos"] = (out["close"] - out["session_low"]) / session_range
-
-    return out
+def _compute_session_vwap(out: pd.DataFrame) -> pd.Series:
+    session_keys = pd.to_datetime(out["ts"], unit="s", utc=True).dt.strftime("%Y-%m-%d")
+    cum_pv = (out["close"] * out["volume"]).groupby(session_keys).cumsum()
+    cum_vol = out["volume"].groupby(session_keys).cumsum().replace(0, np.nan)
+    return cum_pv / cum_vol
 
 
-def compute_obi(orderbook: dict) -> tuple[float, float]:
-    """
-    Compute order book imbalance and spread % from raw orderbook response.
-
-    Returns (obi, spread_pct) where obi = bid_vol / (bid_vol + ask_vol) for top 5 levels.
-    """
+def compute_orderbook_features(orderbook: dict) -> tuple[float, float]:
     pair_key = next(iter(orderbook))
-    ob = orderbook[pair_key]
-    bids = [(float(p), float(v)) for p, v, *_ in ob["bids"][:5]]
-    asks = [(float(p), float(v)) for p, v, *_ in ob["asks"][:5]]
-    bid_vol = sum(v for _, v in bids)
-    ask_vol = sum(v for _, v in asks)
+    payload = orderbook[pair_key]
+    bids = [(float(price), float(size)) for price, size, *_ in payload["bids"][:5]]
+    asks = [(float(price), float(size)) for price, size, *_ in payload["asks"][:5]]
+
+    bid_vol = sum(size for _, size in bids)
+    ask_vol = sum(size for _, size in asks)
     total = bid_vol + ask_vol
     obi = bid_vol / total if total > 0 else 0.5
 
     best_bid = bids[0][0] if bids else 0.0
     best_ask = asks[0][0] if asks else 0.0
-    mid = (best_bid + best_ask) / 2
-    spread_pct = (best_ask - best_bid) / mid if mid > 0 else 0.0
-
+    mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0
+    spread_pct = (best_ask - best_bid) / mid if mid else 0.0
     return obi, spread_pct
 
 
-# ---------------------------------------------------------------------------
-# Signal detection
-# ---------------------------------------------------------------------------
+def compute_features(df: pd.DataFrame, config: StrategyConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    out = df.copy().reset_index(drop=True)
 
-class OverextensionStrategy:
-    """
-    Stateful wrapper around the overextension-short logic.
+    out["ema_fast"] = out["close"].ewm(span=config.ema_fast_span, adjust=False).mean()
+    out["ema_slow"] = out["close"].ewm(span=config.ema_slow_span, adjust=False).mean()
+    out["trend_strength"] = (out["ema_fast"] - out["ema_slow"]) / out["ema_slow"]
 
-    Maintains cluster cooldown state and current open trade.
-    """
+    out["momentum_1"] = out["close"].pct_change(1)
+    out["momentum_short"] = out["close"].pct_change(3)
+    out["momentum_medium"] = out["close"].pct_change(6)
+    out["momentum_long"] = out["close"].pct_change(12)
 
-    def __init__(self):
-        self.last_signal_bar: int = -CLUSTER_GAP_BARS - 1
+    prev_close = out["close"].shift(1)
+    tr_components = pd.concat(
+        [
+            out["high"] - out["low"],
+            (out["high"] - prev_close).abs(),
+            (out["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    )
+    out["true_range"] = tr_components.max(axis=1)
+    out["atr"] = out["true_range"].rolling(config.atr_window, min_periods=3).mean()
+    out["atr_pct"] = out["atr"] / out["close"]
+
+    out["atr_short"] = out["true_range"].rolling(config.compression_window, min_periods=3).mean()
+    out["atr_long"] = out["true_range"].rolling(
+        config.compression_baseline_window,
+        min_periods=6,
+    ).mean()
+    out["compression_ratio"] = out["atr_short"] / out["atr_long"]
+
+    out["volume_ma"] = out["volume"].rolling(20, min_periods=5).mean().shift(1)
+    out["volume_ratio"] = out["volume"] / out["volume_ma"].replace(0, np.nan)
+
+    out["session_vwap"] = _compute_session_vwap(out)
+    out["distance_from_vwap"] = (out["close"] - out["session_vwap"]) / out["session_vwap"]
+    out["low_vs_vwap"] = (out["low"] - out["session_vwap"]) / out["session_vwap"]
+    out["support_touch_pct"] = out["low_vs_vwap"].rolling(5, min_periods=1).min()
+
+    session_keys = pd.to_datetime(out["ts"], unit="s", utc=True).dt.strftime("%Y-%m-%d")
+    out["session_high"] = out["high"].groupby(session_keys).cummax()
+    out["session_low"] = out["low"].groupby(session_keys).cummin()
+    session_range = (out["session_high"] - out["session_low"]).replace(0, np.nan)
+    out["range_position"] = (out["close"] - out["session_low"]) / session_range
+
+    out["swing_high"] = out["high"].rolling(config.impulse_window).max().shift(1)
+    out["swing_low"] = out["low"].rolling(config.impulse_window).min().shift(1)
+    out["impulse_pct"] = (out["swing_high"] - out["swing_low"]) / out["swing_low"]
+    out["pullback_depth_pct"] = (out["swing_high"] - out["low"]) / out["swing_high"]
+
+    out["trigger_level"] = out["high"].rolling(config.trigger_window).max().shift(1)
+    out["breakout_level"] = out["high"].rolling(config.breakout_window).max().shift(1)
+    out["reclaim_pct"] = (out["close"] - out["trigger_level"]) / out["trigger_level"]
+    out["breakout_pct"] = (out["close"] - out["breakout_level"]) / out["breakout_level"]
+
+    bar_range = (out["high"] - out["low"]).replace(0, np.nan)
+    out["close_location"] = (out["close"] - out["low"]) / bar_range
+    out["support_price"] = pd.concat([out["session_vwap"], out["ema_slow"]], axis=1).min(axis=1)
+
+    return out
+
+
+class HourlyBreakoutStrategy:
+    def __init__(self, pair: str, config: StrategyConfig = DEFAULT_CONFIG):
+        self.pair = pair
+        self.config = config
+        self.last_signal_bar = -config.cooldown_bars - 1
         self.trade: Optional[Trade] = None
 
-    def detect(
-        self,
-        df: pd.DataFrame,
-        obi: float,
-        spread_pct: float,
-        session_start_bar: int = 0,
-    ) -> Optional[Signal]:
-        """
-        Run signal detection on the latest bar of df.
-
-        Returns Signal if all entry conditions are met, else None.
-        df must already have features computed via compute_features().
-        """
-        if len(df) < SV_WINDOW + 1:
+    def detect(self, df: pd.DataFrame) -> Optional[Signal]:
+        if len(df) < self.config.warmup_bars:
             return None
 
         bar_idx = len(df) - 1
-
-        # Cluster cooldown
-        if bar_idx - self.last_signal_bar < CLUSTER_GAP_BARS:
+        if self.trade and self.trade.is_open:
+            return None
+        if bar_idx - self.last_signal_bar <= self.config.cooldown_bars:
             return None
 
         last = df.iloc[-1]
-        range_pos = float(last.get("range_pos", 0.0))
-        vwap_dev_pct = float(last.get("vwap_dev_pct", 0.0))
-        sv_ratio30 = float(last.get("sv_ratio30", 0.0))
-
-        # Core overextension conditions
-        if range_pos < RANGE_POS_MIN:
+        required = [
+            "trend_strength",
+            "momentum_short",
+            "momentum_medium",
+            "impulse_pct",
+            "pullback_depth_pct",
+            "support_touch_pct",
+            "distance_from_vwap",
+            "compression_ratio",
+            "reclaim_pct",
+            "close_location",
+            "volume_ratio",
+            "atr_pct",
+            "breakout_level",
+            "support_price",
+        ]
+        if any(np.isnan(float(last.get(col, np.nan))) for col in required):
             return None
-        if vwap_dev_pct < VWAP_DEV_PCT_MIN:
+
+        price = float(last["close"])
+        trend_strength = float(last["trend_strength"])
+        momentum_short = float(last["momentum_short"])
+        momentum_medium = float(last["momentum_medium"])
+        impulse_pct = float(last["impulse_pct"])
+        pullback_depth_pct = float(last["pullback_depth_pct"])
+        support_touch_pct = float(last["support_touch_pct"])
+        distance_from_vwap = float(last["distance_from_vwap"])
+        compression_ratio = float(last["compression_ratio"])
+        reclaim_pct = float(last["reclaim_pct"])
+        close_location = float(last["close_location"])
+        volume_ratio = float(last["volume_ratio"])
+        atr_pct = float(last["atr_pct"])
+        breakout_level = float(last["breakout_level"])
+        breakout_pct = float(last["breakout_pct"])
+        support_price = float(last["ema_fast"])
+
+        if trend_strength < self.config.min_trend_strength:
+            return None
+        if float(last["ema_fast"]) <= float(last["ema_slow"]):
+            return None
+        if compression_ratio > self.config.max_compression_ratio:
+            return None
+        if close_location < self.config.min_close_location:
+            return None
+        if volume_ratio < self.config.min_volume_ratio:
+            return None
+        if momentum_medium < self.config.min_momentum_medium:
+            return None
+        if price <= breakout_level:
             return None
 
-        # Spread gate
-        if spread_pct > SPREAD_PCT_MAX:
-            return None
-
-        # Signed-volume cooling gate
-        bars_from_session_start = bar_idx - session_start_bar
-        is_first_hour = bars_from_session_start < FIRST_HOUR_BARS
-        sv_max = SV_OPEN_RATIO_MAX if is_first_hour else SV_RATIO_MAX
-        if sv_ratio30 > sv_max:
-            return None  # buying still too aggressive — wait for it to cool
+        score = (
+            100.0 * trend_strength
+            + 40.0 * max(0.0, breakout_pct)
+            + 12.0 * max(0.0, momentum_medium - self.config.min_momentum_medium)
+            + 10.0 * max(0.0, volume_ratio - self.config.min_volume_ratio)
+            + 8.0 * max(0.0, close_location - self.config.min_close_location)
+            + 6.0 * max(0.0, self.config.max_compression_ratio - compression_ratio)
+        )
 
         return Signal(
+            pair=self.pair,
             bar_idx=bar_idx,
-            price=float(last["close"]),
-            range_pos=range_pos,
-            vwap_dev_pct=vwap_dev_pct,
-            sv_ratio30=sv_ratio30,
-            spread_pct=spread_pct,
-            obi=obi,
+            timestamp=int(last["ts"]),
+            price=price,
+            trigger_level=breakout_level,
+            support_price=support_price,
+            trend_strength=trend_strength,
+            momentum_short=momentum_short,
+            momentum_medium=momentum_medium,
+            impulse_pct=impulse_pct,
+            pullback_depth_pct=pullback_depth_pct,
+            support_touch_pct=support_touch_pct,
+            distance_from_vwap=distance_from_vwap,
+            compression_ratio=compression_ratio,
+            reclaim_pct=breakout_pct,
+            close_location=close_location,
+            volume_ratio=volume_ratio,
+            atr_pct=atr_pct,
+            score=score,
+            signal_type="hourly_breakout_long",
         )
 
     def record_signal(self, bar_idx: int) -> None:
-        """Call after a signal is detected to set cluster cooldown."""
         self.last_signal_bar = bar_idx
 
-    def open_trade(self, bar_idx: int, price: float, volume: float) -> Trade:
-        """Record a new open trade (entered 1 bar after signal)."""
+    def open_trade(
+        self,
+        signal: Signal,
+        size: float,
+        entry_price: Optional[float] = None,
+        exit_mode: str = "standard",
+        ai_confidence: float = 0.0,
+        entry_bar: Optional[int] = None,
+        entry_ts: Optional[int] = None,
+    ) -> Trade:
+        fill_price = signal.price if entry_price is None else entry_price
+        stop_distance = fill_price * self.config.min_stop_pct
+
         self.trade = Trade(
-            entry_bar=bar_idx,
-            entry_price=price,
-            side=-1,
-            volume=volume,
+            pair=self.pair,
+            entry_bar=signal.bar_idx if entry_bar is None else entry_bar,
+            entry_ts=signal.timestamp if entry_ts is None else entry_ts,
+            entry_price=fill_price,
+            size=size,
+            stop_price=fill_price - stop_distance,
+            target_price=fill_price * (1 + self.config.target_pct),
+            signal_score=signal.score,
+            support_price=signal.support_price,
+            exit_mode=exit_mode,
+            ai_confidence=ai_confidence,
         )
+        self.record_signal(signal.bar_idx)
         return self.trade
 
-    def check_exit(self, df: pd.DataFrame, obi: float) -> Optional[str]:
-        """
-        Check whether the open trade should exit.
-
-        Returns exit-reason string if exit is warranted, else None.
-        """
+    def check_exit(self, df: pd.DataFrame) -> Optional[str]:
         if self.trade is None or not self.trade.is_open:
             return None
 
         current_bar = len(df) - 1
-        bars_held = self.trade.bars_held(current_bar)
-        current_price = float(df.iloc[-1]["close"])
+        last = df.iloc[-1]
+        current_price = float(last["close"])
+        self.trade.update_best(current_price)
 
-        # Update MFE
-        self.trade.update_mfe(current_price)
+        if current_price <= self.trade.stop_price:
+            return "STOP_LOSS"
+        if self.trade.target_price is not None and current_price >= self.trade.target_price:
+            return "TAKE_PROFIT"
 
-        # Max hold
-        if bars_held >= HOLD_BARS:
-            return "TIME_30M"
+        max_hold = (
+            self.config.fast_max_hold_bars
+            if self.trade.exit_mode == "fast"
+            else self.config.max_hold_bars
+        )
+        if self.trade.bars_held(current_bar) >= max_hold:
+            return "TIME_LIMIT"
 
-        # Fail-fast window: first FAIL_FAST_BARS after entry
-        if bars_held <= FAIL_FAST_BARS:
-            no_progress = self.trade.best_pct < FAIL_FAST_MIN_PROGRESS
-
-            # For a short: adverse flow = net buying resuming (sv_ratio > threshold)
-            sv_ratio = float(df.iloc[-1].get("sv_ratio30", 0.0))
-            adverse_flow = sv_ratio > FAIL_FAST_ADVERSE_SV_RATIO
-
-            # Adverse OBI for short: bid-heavy (OBI > 0.5 + threshold)
-            adverse_obi = obi > (0.5 + FAIL_FAST_ADVERSE_OBI)
-
-            if no_progress and adverse_flow and adverse_obi:
-                return "FAIL_FAST"
+        if (
+            self.trade.bars_held(current_bar) >= self.config.min_hold_bars
+            and current_price < float(last["ema_fast"])
+            and float(last["momentum_medium"]) < 0
+        ):
+            return "TREND_LOST"
 
         return None
 
-    def close_trade(self, bar_idx: int, price: float, reason: str) -> Trade:
-        """Record trade exit."""
+    def check_live_exit_price(self, current_price: float) -> Optional[str]:
+        if self.trade is None or not self.trade.is_open:
+            return None
+        self.trade.update_best(current_price)
+        if current_price <= self.trade.stop_price:
+            return "STOP_LOSS"
+        if self.trade.target_price is not None and current_price >= self.trade.target_price:
+            return "TAKE_PROFIT"
+        return None
+
+    def close_trade(self, bar_idx: int, timestamp: int, price: float, reason: str) -> Trade:
         if self.trade is None:
             raise RuntimeError("No open trade to close")
         self.trade.exit_bar = bar_idx
+        self.trade.exit_ts = timestamp
         self.trade.exit_price = price
         self.trade.exit_reason = reason
         return self.trade
 
     def describe_state(self, df: pd.DataFrame) -> str:
-        """Return a human-readable summary of current market state for the last bar."""
         if df.empty:
-            return "No data."
+            return f"{self.pair}: no data"
+
         last = df.iloc[-1]
-        lines = [
-            f"Price:     ${float(last['close']):,.2f}",
-            f"Range pos: {float(last.get('range_pos', 0)):.2f}  (signal >= {RANGE_POS_MIN})",
-            f"VWAP dev:  {float(last.get('vwap_dev_pct', 0)):.3%}  (signal >= {VWAP_DEV_PCT_MIN:.3%})",
-            f"SV ratio:  {float(last.get('sv_ratio30', 0)):.2f}  (gate <= {SV_RATIO_MAX})",
+        fields = [
+            f"{self.pair} price=${float(last['close']):,.6f}",
+            f"trend={float(last.get('trend_strength', 0.0)):.3%}",
+            f"mom_med={float(last.get('momentum_medium', 0.0)):.3%}",
+            f"breakout={float(last.get('breakout_pct', 0.0)):.3%}",
+            f"compress={float(last.get('compression_ratio', 0.0)):.2f}",
+            f"vol={float(last.get('volume_ratio', 0.0)):.2f}x",
+            f"close_loc={float(last.get('close_location', 0.0)):.2f}",
         ]
         if self.trade and self.trade.is_open:
-            pnl = self.trade.side * (float(last["close"]) - self.trade.entry_price) / self.trade.entry_price
-            lines.append(f"Position:  SHORT @ ${self.trade.entry_price:,.2f}  |  PnL {pnl:.3%}  |  MFE {self.trade.best_pct:.3%}")
-        return "\n".join(lines)
+            pnl = self.trade.current_pnl_pct(float(last["close"]))
+            fields.append(f"open_pnl={pnl:.3%}")
+        return " | ".join(fields)
+
+
+PullbackTrendStrategy = HourlyBreakoutStrategy
