@@ -67,6 +67,13 @@ def _public_get(endpoint: str, params: dict[str, str | int]) -> dict:
     return payload["result"]
 
 
+def _format_decimal(value: float, places: int = 10) -> str:
+    text = f"{value:.{places}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def fetch_ohlc(pair: str, interval: int = 1, since: int | None = None) -> dict:
     args = ["ohlc", pair, "--interval", str(interval)]
     if since is not None:
@@ -93,12 +100,30 @@ def paper_init(balance: float = 10000.0) -> dict:
     return _run(["paper", "init", "--balance", str(balance)])
 
 
-def paper_buy(pair: str, volume: float) -> dict:
-    return _run(["paper", "buy", pair, f"{volume:.8f}"])
+def paper_buy(pair: str, volume: float, order_type: str = "market", price: float | None = None) -> dict:
+    args = ["paper", "buy", pair, f"{volume:.8f}", "--type", order_type]
+    if price is not None:
+        args += ["--price", _format_decimal(price)]
+    return _run(args)
 
 
-def paper_sell(pair: str, volume: float) -> dict:
-    return _run(["paper", "sell", pair, f"{volume:.8f}"])
+def paper_sell(pair: str, volume: float, order_type: str = "market", price: float | None = None) -> dict:
+    args = ["paper", "sell", pair, f"{volume:.8f}", "--type", order_type]
+    if price is not None:
+        args += ["--price", _format_decimal(price)]
+    return _run(args)
+
+
+def paper_orders() -> dict:
+    return _run(["paper", "orders"])
+
+
+def paper_cancel(order_id: str) -> dict:
+    return _run(["paper", "cancel", order_id])
+
+
+def paper_history() -> dict:
+    return _run(["paper", "history"])
 
 
 def paper_balance() -> dict:
@@ -115,3 +140,55 @@ def balance() -> dict:
 
 def positions() -> dict:
     return _run(["positions"])
+
+
+def order_buy(
+    pair: str,
+    volume: float,
+    order_type: str = "market",
+    price: float | None = None,
+    post_only: bool = False,
+    client_order_id: str | None = None,
+) -> dict:
+    args = ["order", "buy", pair, f"{volume:.8f}", "--type", order_type]
+    if price is not None:
+        args += ["--price", _format_decimal(price)]
+    if post_only:
+        args += ["--oflags", "post"]
+    if client_order_id:
+        args += ["--cl-ord-id", client_order_id]
+    return _run(args)
+
+
+def order_sell(
+    pair: str,
+    volume: float,
+    order_type: str = "market",
+    price: float | None = None,
+    post_only: bool = False,
+    client_order_id: str | None = None,
+) -> dict:
+    args = ["order", "sell", pair, f"{volume:.8f}", "--type", order_type]
+    if price is not None:
+        args += ["--price", _format_decimal(price)]
+    if post_only:
+        args += ["--oflags", "post"]
+    if client_order_id:
+        args += ["--cl-ord-id", client_order_id]
+    return _run(args)
+
+
+def order_cancel(order_id: str) -> dict:
+    return _run(["order", "cancel", order_id])
+
+
+def open_orders() -> dict:
+    return _run(["open-orders"])
+
+
+def query_orders(order_ids: list[str] | tuple[str, ...] | str) -> dict:
+    if isinstance(order_ids, str):
+        args = [order_ids]
+    else:
+        args = [",".join(order_ids)]
+    return _run(["query-orders"] + args)

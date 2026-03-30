@@ -21,6 +21,7 @@ DEFAULT_PAIRS = ["GIGAUSD"]
 DEFAULT_CONTEXT_PAIRS = ["DOGUSD", "HYPEUSD"]
 DEFAULT_NOTIONAL_USD = 600.0
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+STOPLIKE_EXIT_REASONS = {"STOP_LOSS", "TREND_LOST"}
 
 
 SYSTEM_PROMPT = """\
@@ -70,6 +71,21 @@ class AIDecision:
     @property
     def should_trade(self) -> bool:
         return self.action == "TRADE" and self.size_mult > 0
+
+
+@dataclass
+class PendingOrder:
+    pair: str
+    order_id: str
+    purpose: str
+    side: str
+    size: float
+    price: float
+    created_at: float
+    signal: Optional[strat.Signal] = None
+    exit_reason: str = ""
+    exit_mode: str = "standard"
+    ai_confidence: float = 0.0
 
 
 def _extract_fill_price(payload: dict, fallback: float) -> float:
@@ -140,6 +156,160 @@ def default_decision() -> AIDecision:
         exit_mode="standard",
         reason_tags=["rules_only"],
     )
+
+
+def _format_price(price: float) -> str:
+    return f"{price:.6f}" if abs(price) < 1 else f"{price:.2f}"
+
+
+def _extract_order_id(payload: dict) -> str:
+    for key in ("order_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for key in ("txid", "txids"):
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            return str(value[0])
+        if isinstance(value, str) and value:
+            return value
+    raise ValueError(f"No order identifier found in payload: {payload}")
+
+
+def _extract_best_bid_ask(orderbook: dict) -> tuple[float, float]:
+    pair_key = next(iter(orderbook))
+    payload = orderbook[pair_key]
+    best_bid = float(payload["bids"][0][0]) if payload.get("bids") else 0.0
+    best_ask = float(payload["asks"][0][0]) if payload.get("asks") else 0.0
+    return best_bid, best_ask
+
+
+def _normalize_open_orders(mode: str, payload: dict) -> dict[str, dict]:
+    if mode == "paper":
+        orders = payload.get("open_orders", [])
+        return {
+            str(order.get("id") or order.get("order_id")): order
+            for order in orders
+            if order.get("id") or order.get("order_id")
+        }
+
+    for key in ("open", "open_orders", "orders"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return {str(order_id): order for order_id, order in value.items() if isinstance(order, dict)}
+        if isinstance(value, list):
+            return {
+                str(order.get("id") or order.get("order_id") or order.get("txid")): order
+                for order in value
+                if isinstance(order, dict) and (order.get("id") or order.get("order_id") or order.get("txid"))
+            }
+
+    return {str(order_id): order for order_id, order in payload.items() if isinstance(order, dict)}
+
+
+def _normalize_paper_fills(payload: dict) -> dict[str, dict]:
+    fills: dict[str, dict] = {}
+    for trade in payload.get("trades", []):
+        order_id = trade.get("order_id") or trade.get("id")
+        if order_id:
+            fills[str(order_id)] = trade
+    return fills
+
+
+def _normalize_query_orders(payload: dict) -> dict[str, dict]:
+    for key in ("orders", "result"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return {str(order_id): order for order_id, order in value.items() if isinstance(order, dict)}
+    return {str(order_id): order for order_id, order in payload.items() if isinstance(order, dict)}
+
+
+def _extract_query_fill(order_info: dict) -> tuple[bool, float | None]:
+    status = str(order_info.get("status", "")).lower()
+    vol_exec = order_info.get("vol_exec") or order_info.get("filled")
+    try:
+        filled_qty = float(vol_exec) if vol_exec is not None else 0.0
+    except (TypeError, ValueError):
+        filled_qty = 0.0
+
+    price_fields = [
+        order_info.get("avg_price"),
+        order_info.get("avgprc"),
+        order_info.get("price"),
+    ]
+    descr = order_info.get("descr")
+    if isinstance(descr, dict):
+        price_fields.append(descr.get("price"))
+
+    fill_price = None
+    for value in price_fields:
+        try:
+            if value is not None:
+                fill_price = float(value)
+                break
+        except (TypeError, ValueError):
+            continue
+
+    filled = status in {"closed", "filled"} or filled_qty > 0
+    return filled, fill_price
+
+
+def _extract_fill_timestamp(payload: dict, fallback: int) -> int:
+    for key in ("time", "closetm", "closed_at"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            if isinstance(value, (int, float)):
+                return int(float(value))
+            return int(pd.Timestamp(value).timestamp())
+        except Exception:
+            continue
+    return fallback
+
+
+def _maker_entry_price(best_bid: float, best_ask: float, fallback: float) -> float:
+    if best_bid > 0:
+        return best_bid
+    if best_ask > 0:
+        return best_ask * 0.999
+    return fallback
+
+
+def _maker_exit_price(best_bid: float, best_ask: float, fallback: float) -> float:
+    if best_ask > 0:
+        return best_ask
+    if best_bid > 0:
+        return best_bid * 1.001
+    return fallback
+
+
+def place_maker_limit(
+    mode: str,
+    side: str,
+    pair: str,
+    size: float,
+    price: float,
+) -> dict:
+    if mode == "paper":
+        if side == "buy":
+            return kraken.paper_buy(pair, size, order_type="limit", price=price)
+        return kraken.paper_sell(pair, size, order_type="limit", price=price)
+    if side == "buy":
+        return kraken.order_buy(pair, size, order_type="limit", price=price, post_only=True)
+    return kraken.order_sell(pair, size, order_type="limit", price=price, post_only=True)
+
+
+def place_market_exit(mode: str, pair: str, size: float) -> dict:
+    if mode == "paper":
+        return kraken.paper_sell(pair, size, order_type="market")
+    return kraken.order_sell(pair, size, order_type="market")
+
+
+def cancel_pending_order(mode: str, order_id: str) -> dict:
+    if mode == "paper":
+        return kraken.paper_cancel(order_id)
+    return kraken.order_cancel(order_id)
 
 
 def build_config(args: argparse.Namespace) -> strat.StrategyConfig:
@@ -304,6 +474,8 @@ def run(
     slippage_pct: float,
     fee_pct: float,
     cycles: int,
+    maker_entry_timeout_sec: int,
+    maker_exit_timeout_sec: int,
     config: strat.StrategyConfig,
 ) -> None:
     client: Optional[anthropic.Anthropic] = None
@@ -316,6 +488,7 @@ def run(
     strategies = {pair: strat.HourlyBreakoutStrategy(pair=pair, config=config) for pair in trade_pairs}
     last_closed_bar_ts: dict[str, Optional[int]] = {pair: None for pair in trade_pairs}
     market_pairs = list(dict.fromkeys(trade_pairs + context_pairs))
+    pending_orders: dict[str, PendingOrder] = {}
     trade_log: list[dict] = []
     cycle = 0
 
@@ -325,6 +498,10 @@ def run(
     print(f" Trade pairs: {', '.join(trade_pairs)}")
     print(f" Context pairs: {', '.join(context_pairs) if context_pairs else 'none'}")
     print(f" Max positions: {max_positions} | Notional/trade: ${notional_usd:,.2f}")
+    print(
+        f" Maker entry timeout: {maker_entry_timeout_sec}s | "
+        f"Maker exit timeout: {maker_exit_timeout_sec}s"
+    )
     print(
         f" Trend>={config.min_trend_strength:.2%} | "
         f"Mom6>={config.min_momentum_medium:.2%} | "
@@ -343,6 +520,7 @@ def run(
             pair_contexts: dict[str, dict] = {}
             pair_frames: dict[str, pd.DataFrame] = {}
             live_prices: dict[str, float] = {}
+            best_quotes: dict[str, tuple[float, float]] = {}
             candidate_signals: list[tuple[str, strat.Signal]] = []
             processed_any = False
 
@@ -356,6 +534,7 @@ def run(
                     continue
                 df = strat.compute_features(df_raw.iloc[:-1].reset_index(drop=True), config=config)
                 obi, spread_pct = strat.compute_orderbook_features(raw_ob)
+                best_quotes[pair] = _extract_best_bid_ask(raw_ob)
                 live_price = _extract_ticker_price(raw_ticker, float(df.iloc[-1]["close"]))
                 pair_frames[pair] = df
                 live_prices[pair] = live_price
@@ -368,6 +547,19 @@ def run(
                     live_price,
                 )
 
+            open_order_map: dict[str, dict] = {}
+            paper_fills: dict[str, dict] = {}
+            live_query_orders: dict[str, dict] = {}
+            if pending_orders:
+                if mode == "paper":
+                    open_order_map = _normalize_open_orders(mode, kraken.paper_orders())
+                    paper_fills = _normalize_paper_fills(kraken.paper_history())
+                else:
+                    open_order_map = _normalize_open_orders(mode, kraken.open_orders())
+                    live_query_orders = _normalize_query_orders(
+                        kraken.query_orders([pending.order_id for pending in pending_orders.values()])
+                    )
+
             for pair, strategy in strategies.items():
                 df = pair_frames.get(pair)
                 if df is None or df.empty:
@@ -377,34 +569,203 @@ def run(
                 current_bar = len(df) - 1
                 current_price = live_prices.get(pair, float(df.iloc[-1]["close"]))
                 pair_snapshot = pair_contexts[pair]
+                best_bid, best_ask = best_quotes.get(pair, (0.0, 0.0))
+                pending = pending_orders.get(pair)
+
+                if pending is not None:
+                    processed_any = True
+                    live_exit_reason = (
+                        strategy.check_live_exit_price(current_price)
+                        if strategy.trade and strategy.trade.is_open
+                        else None
+                    )
+                    age_seconds = int(time.time() - pending.created_at)
+                    open_info = open_order_map.get(pending.order_id)
+
+                    if open_info is not None:
+                        print(
+                            f"[Cycle {cycle}] Pending {pending.purpose} {pending.side} {pair} | "
+                            f"id={pending.order_id} | limit={_format_price(pending.price)} | age={age_seconds}s"
+                        )
+                        if (
+                            pending.purpose == "exit"
+                            and live_exit_reason in STOPLIKE_EXIT_REASONS
+                            and strategy.trade is not None
+                        ):
+                            cancel_pending_order(mode, pending.order_id)
+                            result = place_market_exit(mode, pair, strategy.trade.size)
+                            exit_price = _extract_fill_price(result, current_price)
+                            closed = strategy.close_trade(
+                                current_bar,
+                                int(time.time()),
+                                exit_price,
+                                live_exit_reason,
+                            )
+                            note = ""
+                            if client is not None:
+                                note = ask_claude_exit_review(client, pair, closed, live_exit_reason, pair_snapshot)
+                            pnl_pct = closed.realized_pnl_pct() or 0.0
+                            trade_log.append(
+                                {
+                                    "pair": pair,
+                                    "entry": closed.entry_price,
+                                    "exit": exit_price,
+                                    "pnl_pct": pnl_pct,
+                                    "reason": live_exit_reason,
+                                }
+                            )
+                            pending_orders.pop(pair, None)
+                            print(
+                                f"  EXIT {pair} | {live_exit_reason} market fallback | "
+                                f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
+                            )
+                            if note:
+                                print(f"  Claude: {note}")
+                            continue
+
+                        timeout_sec = (
+                            maker_entry_timeout_sec if pending.purpose == "entry" else maker_exit_timeout_sec
+                        )
+                        if age_seconds >= timeout_sec:
+                            cancel_pending_order(mode, pending.order_id)
+                            pending_orders.pop(pair, None)
+                            if pending.purpose == "exit" and strategy.trade is not None:
+                                result = place_market_exit(mode, pair, strategy.trade.size)
+                                exit_price = _extract_fill_price(result, current_price)
+                                closed = strategy.close_trade(
+                                    current_bar,
+                                    int(time.time()),
+                                    exit_price,
+                                    pending.exit_reason,
+                                )
+                                note = ""
+                                if client is not None:
+                                    note = ask_claude_exit_review(client, pair, closed, pending.exit_reason, pair_snapshot)
+                                pnl_pct = closed.realized_pnl_pct() or 0.0
+                                trade_log.append(
+                                    {
+                                        "pair": pair,
+                                        "entry": closed.entry_price,
+                                        "exit": exit_price,
+                                        "pnl_pct": pnl_pct,
+                                        "reason": pending.exit_reason,
+                                    }
+                                )
+                                print(
+                                    f"  EXIT {pair} | {pending.exit_reason} market timeout | "
+                                    f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
+                                )
+                                if note:
+                                    print(f"  Claude: {note}")
+                            else:
+                                print(f"  CANCEL {pair} | stale maker entry {pending.order_id}")
+                            continue
+
+                        continue
+
+                    fill_price: float | None = None
+                    fill_ts = int(time.time())
+                    filled = False
+
+                    if mode == "paper":
+                        fill_info = paper_fills.get(pending.order_id)
+                        if fill_info is not None:
+                            filled = True
+                            fill_price = _extract_fill_price(fill_info, pending.price)
+                            fill_ts = _extract_fill_timestamp(fill_info, fill_ts)
+                    else:
+                        query_info = live_query_orders.get(pending.order_id)
+                        if query_info is not None:
+                            filled, fill_price = _extract_query_fill(query_info)
+                            fill_ts = _extract_fill_timestamp(query_info, fill_ts)
+
+                    pending_orders.pop(pair, None)
+
+                    if filled:
+                        if pending.purpose == "entry" and pending.signal is not None:
+                            strategy.open_trade(
+                                pending.signal,
+                                size=pending.size,
+                                entry_price=fill_price or pending.price,
+                                exit_mode=pending.exit_mode,
+                                ai_confidence=pending.ai_confidence,
+                                entry_bar=current_bar,
+                                entry_ts=fill_ts,
+                            )
+                            print(
+                                f"  ENTRY FILLED {pair} | id={pending.order_id} | "
+                                f"price={_format_price(fill_price or pending.price)} | size={pending.size:.8f}"
+                            )
+                        elif pending.purpose == "exit" and strategy.trade is not None:
+                            exit_price = fill_price or current_price
+                            closed = strategy.close_trade(current_bar, fill_ts, exit_price, pending.exit_reason)
+                            note = ""
+                            if client is not None:
+                                note = ask_claude_exit_review(client, pair, closed, pending.exit_reason, pair_snapshot)
+                            pnl_pct = closed.realized_pnl_pct() or 0.0
+                            trade_log.append(
+                                {
+                                    "pair": pair,
+                                    "entry": closed.entry_price,
+                                    "exit": exit_price,
+                                    "pnl_pct": pnl_pct,
+                                    "reason": pending.exit_reason,
+                                }
+                            )
+                            print(
+                                f"  EXIT FILLED {pair} | {pending.exit_reason} | "
+                                f"price={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
+                            )
+                            if note:
+                                print(f"  Claude: {note}")
+                    else:
+                        print(f"  CLEAR {pair} | maker order {pending.order_id} no longer open and not filled")
+                    continue
 
                 if strategy.trade and strategy.trade.is_open:
                     exit_reason = strategy.check_live_exit_price(current_price)
                     if exit_reason:
-                        if mode == "paper":
-                            result = kraken.paper_sell(pair, strategy.trade.size)
+                        if exit_reason in STOPLIKE_EXIT_REASONS:
+                            result = place_market_exit(mode, pair, strategy.trade.size)
                             exit_price = _extract_fill_price(result, current_price)
+                            closed = strategy.close_trade(current_bar, int(time.time()), exit_price, exit_reason)
+                            note = ""
+                            if client is not None:
+                                note = ask_claude_exit_review(client, pair, closed, exit_reason, pair_snapshot)
+                            pnl_pct = closed.realized_pnl_pct() or 0.0
+                            trade_log.append(
+                                {
+                                    "pair": pair,
+                                    "entry": closed.entry_price,
+                                    "exit": exit_price,
+                                    "pnl_pct": pnl_pct,
+                                    "reason": exit_reason,
+                                }
+                            )
+                            print(
+                                f"  EXIT {pair} | {exit_reason} market | "
+                                f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
+                            )
+                            if note:
+                                print(f"  Claude: {note}")
                         else:
-                            exit_price = current_price
-                        closed = strategy.close_trade(current_bar, last_ts, exit_price, exit_reason)
-                        note = ""
-                        if client is not None:
-                            note = ask_claude_exit_review(client, pair, closed, exit_reason, pair_snapshot)
-                        pnl_pct = closed.realized_pnl_pct() or 0.0
-                        trade_log.append(
-                            {
-                                "pair": pair,
-                                "entry": closed.entry_price,
-                                "exit": exit_price,
-                                "pnl_pct": pnl_pct,
-                                "reason": exit_reason,
-                            }
-                        )
-                        print(
-                            f"  EXIT {pair} | {exit_reason} | exit={exit_price:.2f} | pnl={pnl_pct:.3%}"
-                        )
-                        if note:
-                            print(f"  Claude: {note}")
+                            limit_price = _maker_exit_price(best_bid, best_ask, current_price)
+                            result = place_maker_limit(mode, "sell", pair, strategy.trade.size, limit_price)
+                            order_id = _extract_order_id(result)
+                            pending_orders[pair] = PendingOrder(
+                                pair=pair,
+                                order_id=order_id,
+                                purpose="exit",
+                                side="sell",
+                                size=strategy.trade.size,
+                                price=limit_price,
+                                created_at=time.time(),
+                                exit_reason=exit_reason,
+                            )
+                            print(
+                                f"  PLACE EXIT {pair} | {exit_reason} | "
+                                f"id={order_id} | limit={_format_price(limit_price)}"
+                            )
                         processed_any = True
                         continue
 
@@ -423,30 +784,47 @@ def run(
                 if strategy.trade and strategy.trade.is_open:
                     exit_reason = strategy.check_exit(df)
                     if exit_reason:
-                        if mode == "paper":
-                            result = kraken.paper_sell(pair, strategy.trade.size)
+                        if exit_reason in STOPLIKE_EXIT_REASONS:
+                            result = place_market_exit(mode, pair, strategy.trade.size)
                             exit_price = _extract_fill_price(result, current_price)
+                            closed = strategy.close_trade(current_bar, last_ts, exit_price, exit_reason)
+                            note = ""
+                            if client is not None:
+                                note = ask_claude_exit_review(client, pair, closed, exit_reason, pair_snapshot)
+                            pnl_pct = closed.realized_pnl_pct() or 0.0
+                            trade_log.append(
+                                {
+                                    "pair": pair,
+                                    "entry": closed.entry_price,
+                                    "exit": exit_price,
+                                    "pnl_pct": pnl_pct,
+                                    "reason": exit_reason,
+                                }
+                            )
+                            print(
+                                f"  EXIT {pair} | {exit_reason} market | "
+                                f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
+                            )
+                            if note:
+                                print(f"  Claude: {note}")
                         else:
-                            exit_price = current_price
-                        closed = strategy.close_trade(current_bar, last_ts, exit_price, exit_reason)
-                        note = ""
-                        if client is not None:
-                            note = ask_claude_exit_review(client, pair, closed, exit_reason, pair_snapshot)
-                        pnl_pct = closed.realized_pnl_pct() or 0.0
-                        trade_log.append(
-                            {
-                                "pair": pair,
-                                "entry": closed.entry_price,
-                                "exit": exit_price,
-                                "pnl_pct": pnl_pct,
-                                "reason": exit_reason,
-                            }
-                        )
-                        print(
-                            f"  EXIT {pair} | {exit_reason} | exit={exit_price:.6f} | pnl={pnl_pct:.3%}"
-                        )
-                        if note:
-                            print(f"  Claude: {note}")
+                            limit_price = _maker_exit_price(best_bid, best_ask, current_price)
+                            result = place_maker_limit(mode, "sell", pair, strategy.trade.size, limit_price)
+                            order_id = _extract_order_id(result)
+                            pending_orders[pair] = PendingOrder(
+                                pair=pair,
+                                order_id=order_id,
+                                purpose="exit",
+                                side="sell",
+                                size=strategy.trade.size,
+                                price=limit_price,
+                                created_at=time.time(),
+                                exit_reason=exit_reason,
+                            )
+                            print(
+                                f"  PLACE EXIT {pair} | {exit_reason} | "
+                                f"id={order_id} | limit={_format_price(limit_price)}"
+                            )
                     continue
 
                 signal = strategy.detect(df)
@@ -458,12 +836,20 @@ def run(
                 print(f"[Cycle {cycle}] Waiting for next closed {interval_minutes}m bar...")
             else:
                 open_positions = sum(
-                    1 for strategy in strategies.values() if strategy.trade and strategy.trade.is_open
+                    1
+                    for pair_name, strategy in strategies.items()
+                    if (strategy.trade and strategy.trade.is_open)
+                    or (
+                        pair_name in pending_orders
+                        and pending_orders[pair_name].purpose == "entry"
+                    )
                 )
                 if candidate_signals and open_positions < max_positions:
                     slots = max_positions - open_positions
                     ranked = sorted(candidate_signals, key=lambda item: item[1].score, reverse=True)
                     for pair, signal in ranked[:slots]:
+                        if pair in pending_orders:
+                            continue
                         decision = default_decision()
                         if client is not None:
                             snapshot = build_ai_snapshot(
@@ -499,22 +885,25 @@ def run(
                             print(f"  SKIP {pair} | invalid order size")
                             continue
 
-                        if mode == "paper":
-                            result = kraken.paper_buy(pair, size)
-                            entry_price = _extract_fill_price(result, signal.price)
-                        else:
-                            entry_price = signal.price
-
-                        strategies[pair].open_trade(
-                            signal,
+                        best_bid, best_ask = best_quotes.get(pair, (0.0, 0.0))
+                        entry_price = _maker_entry_price(best_bid, best_ask, signal.price)
+                        result = place_maker_limit(mode, "buy", pair, size, entry_price)
+                        order_id = _extract_order_id(result)
+                        pending_orders[pair] = PendingOrder(
+                            pair=pair,
+                            order_id=order_id,
+                            purpose="entry",
+                            side="buy",
                             size=size,
-                            entry_price=entry_price,
+                            price=entry_price,
+                            created_at=time.time(),
+                            signal=signal,
                             exit_mode=decision.exit_mode,
                             ai_confidence=decision.confidence,
                         )
                         print(
-                            f"  BUY  {pair} | size={size:.8f} | entry={entry_price:.6f} | "
-                            f"score={signal.score:.2f}"
+                            f"  PLACE ENTRY {pair} | id={order_id} | size={size:.8f} | "
+                            f"limit={_format_price(entry_price)} | score={signal.score:.2f}"
                         )
 
             if cycle % 10 == 0 and trade_log:
@@ -551,6 +940,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-claude", action="store_true")
     parser.add_argument("--slippage-pct", type=float, default=0.0005)
     parser.add_argument("--fee-pct", type=float, default=0.0026)
+    parser.add_argument("--maker-entry-timeout-sec", type=int, default=1200)
+    parser.add_argument("--maker-exit-timeout-sec", type=int, default=300)
     parser.add_argument("--breakout-window", type=int, default=strat.DEFAULT_CONFIG.breakout_window)
     parser.add_argument("--min-trend-strength", type=float, default=strat.DEFAULT_CONFIG.min_trend_strength)
     parser.add_argument("--min-momentum-medium", type=float, default=strat.DEFAULT_CONFIG.min_momentum_medium)
@@ -587,5 +978,7 @@ if __name__ == "__main__":
         slippage_pct=args.slippage_pct,
         fee_pct=args.fee_pct,
         cycles=args.cycles,
+        maker_entry_timeout_sec=args.maker_entry_timeout_sec,
+        maker_exit_timeout_sec=args.maker_exit_timeout_sec,
         config=config,
     )
