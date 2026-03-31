@@ -5,7 +5,9 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import anthropic
@@ -21,6 +23,8 @@ DEFAULT_PAIRS = ["GIGAUSD"]
 DEFAULT_CONTEXT_PAIRS = ["DOGUSD", "HYPEUSD"]
 DEFAULT_NOTIONAL_USD = 600.0
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+DEFAULT_LOG_DIR = "runtime"
+DEFAULT_STATE_FILE = "runtime/agent_state.json"
 STOPLIKE_EXIT_REASONS = {"STOP_LOSS", "TREND_LOST"}
 
 
@@ -86,6 +90,128 @@ class PendingOrder:
     exit_reason: str = ""
     exit_mode: str = "standard"
     ai_confidence: float = 0.0
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _json_default(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def append_event(log_path: Path, event_type: str, **payload: object) -> None:
+    _ensure_parent(log_path)
+    record = {
+        "ts": _utc_now_iso(),
+        "event": event_type,
+        **payload,
+    }
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, default=_json_default, sort_keys=True) + "\n")
+
+
+def _serialize_signal(signal: strat.Signal | None) -> dict | None:
+    if signal is None:
+        return None
+    return asdict(signal)
+
+
+def _deserialize_signal(payload: dict | None) -> Optional[strat.Signal]:
+    if not payload:
+        return None
+    return strat.Signal(**payload)
+
+
+def _serialize_trade(trade: strat.Trade | None) -> dict | None:
+    if trade is None:
+        return None
+    return asdict(trade)
+
+
+def _deserialize_trade(payload: dict | None) -> Optional[strat.Trade]:
+    if not payload:
+        return None
+    return strat.Trade(**payload)
+
+
+def _serialize_pending_order(order: PendingOrder) -> dict:
+    payload = asdict(order)
+    payload["signal"] = _serialize_signal(order.signal)
+    return payload
+
+
+def _deserialize_pending_order(payload: dict) -> PendingOrder:
+    order_payload = dict(payload)
+    order_payload["signal"] = _deserialize_signal(order_payload.get("signal"))
+    return PendingOrder(**order_payload)
+
+
+def load_runtime_state(
+    state_path: Path,
+    strategies: dict[str, strat.HourlyBreakoutStrategy],
+    pending_orders: dict[str, PendingOrder],
+    last_closed_bar_ts: dict[str, Optional[int]],
+) -> tuple[int, list[dict]]:
+    if not state_path.exists():
+        return 0, []
+
+    with state_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    for pair, strategy_state in payload.get("strategies", {}).items():
+        strategy = strategies.get(pair)
+        if strategy is None:
+            continue
+        strategy.last_signal_bar = int(strategy_state.get("last_signal_bar", strategy.last_signal_bar))
+        strategy.trade = _deserialize_trade(strategy_state.get("trade"))
+
+    pending_orders.clear()
+    for pair, order_payload in payload.get("pending_orders", {}).items():
+        if pair in strategies:
+            pending_orders[pair] = _deserialize_pending_order(order_payload)
+
+    for pair, value in payload.get("last_closed_bar_ts", {}).items():
+        if pair in last_closed_bar_ts:
+            last_closed_bar_ts[pair] = value
+
+    return int(payload.get("cycle", 0)), list(payload.get("trade_log", []))
+
+
+def save_runtime_state(
+    state_path: Path,
+    cycle: int,
+    strategies: dict[str, strat.HourlyBreakoutStrategy],
+    pending_orders: dict[str, PendingOrder],
+    last_closed_bar_ts: dict[str, Optional[int]],
+    trade_log: list[dict],
+) -> None:
+    payload = {
+        "saved_at": _utc_now_iso(),
+        "cycle": cycle,
+        "strategies": {
+            pair: {
+                "last_signal_bar": strategy.last_signal_bar,
+                "trade": _serialize_trade(strategy.trade),
+            }
+            for pair, strategy in strategies.items()
+        },
+        "pending_orders": {
+            pair: _serialize_pending_order(order)
+            for pair, order in pending_orders.items()
+        },
+        "last_closed_bar_ts": last_closed_bar_ts,
+        "trade_log": trade_log,
+    }
+    _ensure_parent(state_path)
+    with state_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, default=_json_default)
 
 
 def _extract_fill_price(payload: dict, fallback: float) -> float:
@@ -290,20 +416,21 @@ def place_maker_limit(
     pair: str,
     size: float,
     price: float,
+    validate: bool = False,
 ) -> dict:
     if mode == "paper":
         if side == "buy":
             return kraken.paper_buy(pair, size, order_type="limit", price=price)
         return kraken.paper_sell(pair, size, order_type="limit", price=price)
     if side == "buy":
-        return kraken.order_buy(pair, size, order_type="limit", price=price, post_only=True)
-    return kraken.order_sell(pair, size, order_type="limit", price=price, post_only=True)
+        return kraken.order_buy(pair, size, order_type="limit", price=price, post_only=True, validate=validate)
+    return kraken.order_sell(pair, size, order_type="limit", price=price, post_only=True, validate=validate)
 
 
-def place_market_exit(mode: str, pair: str, size: float) -> dict:
+def place_market_exit(mode: str, pair: str, size: float, validate: bool = False) -> dict:
     if mode == "paper":
         return kraken.paper_sell(pair, size, order_type="market")
-    return kraken.order_sell(pair, size, order_type="market")
+    return kraken.order_sell(pair, size, order_type="market", validate=validate)
 
 
 def cancel_pending_order(mode: str, order_id: str) -> dict:
@@ -477,6 +604,12 @@ def run(
     maker_entry_timeout_sec: int,
     maker_exit_timeout_sec: int,
     config: strat.StrategyConfig,
+    log_dir: Path,
+    state_path: Path,
+    resume_state: bool,
+    paper_init_balance: float,
+    reset_paper: bool,
+    validate_live_orders: bool,
 ) -> None:
     client: Optional[anthropic.Anthropic] = None
     if use_claude:
@@ -485,12 +618,57 @@ def run(
             raise RuntimeError("ANTHROPIC_API_KEY is required when --use-claude is enabled.")
         client = anthropic.Anthropic(api_key=api_key)
 
+    if mode == "live":
+        missing = [name for name in ("KRAKEN_API_KEY", "KRAKEN_API_SECRET") if not os.environ.get(name)]
+        if missing:
+            raise RuntimeError(f"Missing required live trading credentials: {', '.join(missing)}")
+
+    event_log_path = log_dir / "events.jsonl"
+    summary_log_path = log_dir / "summary.jsonl"
+
     strategies = {pair: strat.HourlyBreakoutStrategy(pair=pair, config=config) for pair in trade_pairs}
     last_closed_bar_ts: dict[str, Optional[int]] = {pair: None for pair in trade_pairs}
     market_pairs = list(dict.fromkeys(trade_pairs + context_pairs))
     pending_orders: dict[str, PendingOrder] = {}
-    trade_log: list[dict] = []
-    cycle = 0
+    cycle, trade_log = (0, [])
+
+    if mode == "paper" and reset_paper:
+        paper_status = kraken.paper_init(balance=paper_init_balance)
+        append_event(
+            event_log_path,
+            "paper_init",
+            balance=paper_init_balance,
+            result=paper_status,
+        )
+
+    if resume_state:
+        cycle, trade_log = load_runtime_state(state_path, strategies, pending_orders, last_closed_bar_ts)
+        append_event(
+            event_log_path,
+            "state_restored",
+            state_file=str(state_path),
+            restored_cycle=cycle,
+            restored_pending_orders=len(pending_orders),
+            restored_open_trades=sum(
+                1 for strategy in strategies.values() if strategy.trade and strategy.trade.is_open
+            ),
+        )
+
+    if validate_live_orders and (
+        pending_orders
+        or any(strategy.trade and strategy.trade.is_open for strategy in strategies.values())
+    ):
+        raise RuntimeError("Validate-only mode requires no restored open trades or pending orders.")
+
+    def persist_state() -> None:
+        save_runtime_state(
+            state_path=state_path,
+            cycle=cycle,
+            strategies=strategies,
+            pending_orders=pending_orders,
+            last_closed_bar_ts=last_closed_bar_ts,
+            trade_log=trade_log,
+        )
 
     print(f"\n{'=' * 78}")
     print(f" Hourly Breakout Agent | mode={mode} | interval={interval_minutes}m")
@@ -510,7 +688,26 @@ def run(
         f"Hold={config.max_hold_bars} bars"
     )
     print(f" Claude filter: {'on' if client else 'off'}")
+    print(f" Event log: {event_log_path}")
+    print(f" State file: {state_path} | Resume: {'on' if resume_state else 'off'}")
+    print(f" Live validate-only: {'on' if validate_live_orders else 'off'}")
     print(f"{'=' * 78}\n")
+
+    append_event(
+        event_log_path,
+        "agent_started",
+        mode=mode,
+        trade_pairs=trade_pairs,
+        context_pairs=context_pairs,
+        poll_seconds=poll_seconds,
+        interval_minutes=interval_minutes,
+        max_positions=max_positions,
+        notional_usd=notional_usd,
+        validate_live_orders=validate_live_orders,
+        state_file=str(state_path),
+        resumed=resume_state,
+    )
+    persist_state()
 
     while True:
         cycle += 1
@@ -587,6 +784,17 @@ def run(
                             f"[Cycle {cycle}] Pending {pending.purpose} {pending.side} {pair} | "
                             f"id={pending.order_id} | limit={_format_price(pending.price)} | age={age_seconds}s"
                         )
+                        append_event(
+                            event_log_path,
+                            "pending_open",
+                            cycle=cycle,
+                            pair=pair,
+                            purpose=pending.purpose,
+                            side=pending.side,
+                            order_id=pending.order_id,
+                            limit_price=pending.price,
+                            age_seconds=age_seconds,
+                        )
                         if (
                             pending.purpose == "exit"
                             and live_exit_reason in STOPLIKE_EXIT_REASONS
@@ -615,6 +823,17 @@ def run(
                                 }
                             )
                             pending_orders.pop(pair, None)
+                            append_event(
+                                event_log_path,
+                                "exit_market_fallback",
+                                cycle=cycle,
+                                pair=pair,
+                                order_id=pending.order_id,
+                                reason=live_exit_reason,
+                                exit_price=exit_price,
+                                pnl_pct=pnl_pct,
+                            )
+                            persist_state()
                             print(
                                 f"  EXIT {pair} | {live_exit_reason} market fallback | "
                                 f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
@@ -629,6 +848,17 @@ def run(
                         if age_seconds >= timeout_sec:
                             cancel_pending_order(mode, pending.order_id)
                             pending_orders.pop(pair, None)
+                            append_event(
+                                event_log_path,
+                                "order_canceled",
+                                cycle=cycle,
+                                pair=pair,
+                                purpose=pending.purpose,
+                                side=pending.side,
+                                order_id=pending.order_id,
+                                age_seconds=age_seconds,
+                                reason="timeout",
+                            )
                             if pending.purpose == "exit" and strategy.trade is not None:
                                 result = place_market_exit(mode, pair, strategy.trade.size)
                                 exit_price = _extract_fill_price(result, current_price)
@@ -655,10 +885,21 @@ def run(
                                     f"  EXIT {pair} | {pending.exit_reason} market timeout | "
                                     f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
                                 )
+                                append_event(
+                                    event_log_path,
+                                    "exit_market_timeout",
+                                    cycle=cycle,
+                                    pair=pair,
+                                    order_id=pending.order_id,
+                                    reason=pending.exit_reason,
+                                    exit_price=exit_price,
+                                    pnl_pct=pnl_pct,
+                                )
                                 if note:
                                     print(f"  Claude: {note}")
                             else:
                                 print(f"  CANCEL {pair} | stale maker entry {pending.order_id}")
+                            persist_state()
                             continue
 
                         continue
@@ -696,6 +937,16 @@ def run(
                                 f"  ENTRY FILLED {pair} | id={pending.order_id} | "
                                 f"price={_format_price(fill_price or pending.price)} | size={pending.size:.8f}"
                             )
+                            append_event(
+                                event_log_path,
+                                "entry_filled",
+                                cycle=cycle,
+                                pair=pair,
+                                order_id=pending.order_id,
+                                fill_price=fill_price or pending.price,
+                                size=pending.size,
+                            )
+                            persist_state()
                         elif pending.purpose == "exit" and strategy.trade is not None:
                             exit_price = fill_price or current_price
                             closed = strategy.close_trade(current_bar, fill_ts, exit_price, pending.exit_reason)
@@ -716,16 +967,51 @@ def run(
                                 f"  EXIT FILLED {pair} | {pending.exit_reason} | "
                                 f"price={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
                             )
+                            append_event(
+                                event_log_path,
+                                "exit_filled",
+                                cycle=cycle,
+                                pair=pair,
+                                order_id=pending.order_id,
+                                reason=pending.exit_reason,
+                                exit_price=exit_price,
+                                pnl_pct=pnl_pct,
+                            )
+                            persist_state()
                             if note:
                                 print(f"  Claude: {note}")
                     else:
                         print(f"  CLEAR {pair} | maker order {pending.order_id} no longer open and not filled")
+                        append_event(
+                            event_log_path,
+                            "order_cleared",
+                            cycle=cycle,
+                            pair=pair,
+                            order_id=pending.order_id,
+                            purpose=pending.purpose,
+                        )
+                        persist_state()
                     continue
 
                 if strategy.trade and strategy.trade.is_open:
                     exit_reason = strategy.check_live_exit_price(current_price)
                     if exit_reason:
                         if exit_reason in STOPLIKE_EXIT_REASONS:
+                            if mode == "live" and validate_live_orders:
+                                result = place_market_exit(mode, pair, strategy.trade.size, validate=True)
+                                append_event(
+                                    event_log_path,
+                                    "exit_validation",
+                                    cycle=cycle,
+                                    pair=pair,
+                                    side="sell",
+                                    order_type="market",
+                                    size=strategy.trade.size,
+                                    reason=exit_reason,
+                                    result=result,
+                                )
+                                print(f"  VALIDATE EXIT {pair} | {exit_reason} market")
+                                continue
                             result = place_market_exit(mode, pair, strategy.trade.size)
                             exit_price = _extract_fill_price(result, current_price)
                             closed = strategy.close_trade(current_bar, int(time.time()), exit_price, exit_reason)
@@ -746,11 +1032,46 @@ def run(
                                 f"  EXIT {pair} | {exit_reason} market | "
                                 f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
                             )
+                            append_event(
+                                event_log_path,
+                                "exit_market",
+                                cycle=cycle,
+                                pair=pair,
+                                reason=exit_reason,
+                                exit_price=exit_price,
+                                pnl_pct=pnl_pct,
+                            )
+                            persist_state()
                             if note:
                                 print(f"  Claude: {note}")
                         else:
                             limit_price = _maker_exit_price(best_bid, best_ask, current_price)
-                            result = place_maker_limit(mode, "sell", pair, strategy.trade.size, limit_price)
+                            result = place_maker_limit(
+                                mode,
+                                "sell",
+                                pair,
+                                strategy.trade.size,
+                                limit_price,
+                                validate=mode == "live" and validate_live_orders,
+                            )
+                            if mode == "live" and validate_live_orders:
+                                append_event(
+                                    event_log_path,
+                                    "exit_validation",
+                                    cycle=cycle,
+                                    pair=pair,
+                                    side="sell",
+                                    order_type="limit",
+                                    size=strategy.trade.size,
+                                    limit_price=limit_price,
+                                    reason=exit_reason,
+                                    result=result,
+                                )
+                                print(
+                                    f"  VALIDATE EXIT {pair} | {exit_reason} | "
+                                    f"limit={_format_price(limit_price)}"
+                                )
+                                continue
                             order_id = _extract_order_id(result)
                             pending_orders[pair] = PendingOrder(
                                 pair=pair,
@@ -766,6 +1087,17 @@ def run(
                                 f"  PLACE EXIT {pair} | {exit_reason} | "
                                 f"id={order_id} | limit={_format_price(limit_price)}"
                             )
+                            append_event(
+                                event_log_path,
+                                "exit_placed",
+                                cycle=cycle,
+                                pair=pair,
+                                order_id=order_id,
+                                limit_price=limit_price,
+                                size=strategy.trade.size,
+                                reason=exit_reason,
+                            )
+                            persist_state()
                         processed_any = True
                         continue
 
@@ -785,6 +1117,21 @@ def run(
                     exit_reason = strategy.check_exit(df)
                     if exit_reason:
                         if exit_reason in STOPLIKE_EXIT_REASONS:
+                            if mode == "live" and validate_live_orders:
+                                result = place_market_exit(mode, pair, strategy.trade.size, validate=True)
+                                append_event(
+                                    event_log_path,
+                                    "exit_validation",
+                                    cycle=cycle,
+                                    pair=pair,
+                                    side="sell",
+                                    order_type="market",
+                                    size=strategy.trade.size,
+                                    reason=exit_reason,
+                                    result=result,
+                                )
+                                print(f"  VALIDATE EXIT {pair} | {exit_reason} market")
+                                continue
                             result = place_market_exit(mode, pair, strategy.trade.size)
                             exit_price = _extract_fill_price(result, current_price)
                             closed = strategy.close_trade(current_bar, last_ts, exit_price, exit_reason)
@@ -805,11 +1152,46 @@ def run(
                                 f"  EXIT {pair} | {exit_reason} market | "
                                 f"exit={_format_price(exit_price)} | pnl={pnl_pct:.3%}"
                             )
+                            append_event(
+                                event_log_path,
+                                "exit_market",
+                                cycle=cycle,
+                                pair=pair,
+                                reason=exit_reason,
+                                exit_price=exit_price,
+                                pnl_pct=pnl_pct,
+                            )
+                            persist_state()
                             if note:
                                 print(f"  Claude: {note}")
                         else:
                             limit_price = _maker_exit_price(best_bid, best_ask, current_price)
-                            result = place_maker_limit(mode, "sell", pair, strategy.trade.size, limit_price)
+                            result = place_maker_limit(
+                                mode,
+                                "sell",
+                                pair,
+                                strategy.trade.size,
+                                limit_price,
+                                validate=mode == "live" and validate_live_orders,
+                            )
+                            if mode == "live" and validate_live_orders:
+                                append_event(
+                                    event_log_path,
+                                    "exit_validation",
+                                    cycle=cycle,
+                                    pair=pair,
+                                    side="sell",
+                                    order_type="limit",
+                                    size=strategy.trade.size,
+                                    limit_price=limit_price,
+                                    reason=exit_reason,
+                                    result=result,
+                                )
+                                print(
+                                    f"  VALIDATE EXIT {pair} | {exit_reason} | "
+                                    f"limit={_format_price(limit_price)}"
+                                )
+                                continue
                             order_id = _extract_order_id(result)
                             pending_orders[pair] = PendingOrder(
                                 pair=pair,
@@ -825,6 +1207,17 @@ def run(
                                 f"  PLACE EXIT {pair} | {exit_reason} | "
                                 f"id={order_id} | limit={_format_price(limit_price)}"
                             )
+                            append_event(
+                                event_log_path,
+                                "exit_placed",
+                                cycle=cycle,
+                                pair=pair,
+                                order_id=order_id,
+                                limit_price=limit_price,
+                                size=strategy.trade.size,
+                                reason=exit_reason,
+                            )
+                            persist_state()
                     continue
 
                 signal = strategy.detect(df)
@@ -876,6 +1269,18 @@ def run(
                             f"size_mult={decision.size_mult:.2f} | exit_mode={decision.exit_mode} | "
                             f"tags={','.join(decision.reason_tags) if decision.reason_tags else 'none'}"
                         )
+                        append_event(
+                            event_log_path,
+                            "decision",
+                            cycle=cycle,
+                            pair=pair,
+                            action=decision.action,
+                            confidence=decision.confidence,
+                            size_mult=decision.size_mult,
+                            exit_mode=decision.exit_mode,
+                            reason_tags=decision.reason_tags,
+                            signal_score=signal.score,
+                        )
 
                         if not decision.should_trade:
                             continue
@@ -887,7 +1292,32 @@ def run(
 
                         best_bid, best_ask = best_quotes.get(pair, (0.0, 0.0))
                         entry_price = _maker_entry_price(best_bid, best_ask, signal.price)
-                        result = place_maker_limit(mode, "buy", pair, size, entry_price)
+                        result = place_maker_limit(
+                            mode,
+                            "buy",
+                            pair,
+                            size,
+                            entry_price,
+                            validate=mode == "live" and validate_live_orders,
+                        )
+                        if mode == "live" and validate_live_orders:
+                            append_event(
+                                event_log_path,
+                                "entry_validation",
+                                cycle=cycle,
+                                pair=pair,
+                                side="buy",
+                                order_type="limit",
+                                size=size,
+                                limit_price=entry_price,
+                                signal_score=signal.score,
+                                result=result,
+                            )
+                            print(
+                                f"  VALIDATE ENTRY {pair} | size={size:.8f} | "
+                                f"limit={_format_price(entry_price)} | score={signal.score:.2f}"
+                            )
+                            continue
                         order_id = _extract_order_id(result)
                         pending_orders[pair] = PendingOrder(
                             pair=pair,
@@ -905,6 +1335,18 @@ def run(
                             f"  PLACE ENTRY {pair} | id={order_id} | size={size:.8f} | "
                             f"limit={_format_price(entry_price)} | score={signal.score:.2f}"
                         )
+                        append_event(
+                            event_log_path,
+                            "entry_placed",
+                            cycle=cycle,
+                            pair=pair,
+                            order_id=order_id,
+                            limit_price=entry_price,
+                            size=size,
+                            signal_score=signal.score,
+                            exit_mode=decision.exit_mode,
+                        )
+                        persist_state()
 
             if cycle % 10 == 0 and trade_log:
                 pnls = [trade["pnl_pct"] for trade in trade_log]
@@ -913,12 +1355,25 @@ def run(
                     f"\nSummary after {cycle} cycles | trades={len(pnls)} | "
                     f"win_rate={win_rate:.1%} | avg_pnl={sum(pnls) / len(pnls):.3%}\n"
                 )
+                append_event(
+                    summary_log_path,
+                    "rolling_summary",
+                    cycle=cycle,
+                    trades=len(pnls),
+                    win_rate=win_rate,
+                    avg_pnl=sum(pnls) / len(pnls),
+                )
+            persist_state()
 
         except KeyboardInterrupt:
             print("\nAgent stopped by user.")
+            append_event(event_log_path, "agent_stopped", cycle=cycle, reason="keyboard_interrupt")
+            persist_state()
             break
         except Exception as exc:
             print(f"[ERROR] {exc}")
+            append_event(event_log_path, "error", cycle=cycle, error=str(exc))
+            persist_state()
 
         if cycles and cycle >= cycles:
             print("Reached requested cycle limit.")
@@ -942,6 +1397,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fee-pct", type=float, default=0.0026)
     parser.add_argument("--maker-entry-timeout-sec", type=int, default=1200)
     parser.add_argument("--maker-exit-timeout-sec", type=int, default=300)
+    parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
+    parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
+    parser.add_argument("--resume-state", action="store_true")
+    parser.add_argument("--paper-init-balance", type=float, default=10000.0)
+    parser.add_argument("--reset-paper", action="store_true")
+    parser.add_argument("--validate-live-orders", action="store_true")
     parser.add_argument("--breakout-window", type=int, default=strat.DEFAULT_CONFIG.breakout_window)
     parser.add_argument("--min-trend-strength", type=float, default=strat.DEFAULT_CONFIG.min_trend_strength)
     parser.add_argument("--min-momentum-medium", type=float, default=strat.DEFAULT_CONFIG.min_momentum_medium)
@@ -960,6 +1421,8 @@ if __name__ == "__main__":
     trade_pairs = [pair.strip() for pair in args.pairs.split(",") if pair.strip()]
     context_pairs = [pair.strip() for pair in args.context_pairs.split(",") if pair.strip()]
     config = build_config(args)
+    log_dir = Path(args.log_dir)
+    state_path = Path(args.state_file)
 
     if args.mode == "live":
         confirm = input("WARNING: live mode can place real orders. Type 'yes' to continue: ")
@@ -981,4 +1444,10 @@ if __name__ == "__main__":
         maker_entry_timeout_sec=args.maker_entry_timeout_sec,
         maker_exit_timeout_sec=args.maker_exit_timeout_sec,
         config=config,
+        log_dir=log_dir,
+        state_path=state_path,
+        resume_state=args.resume_state,
+        paper_init_balance=args.paper_init_balance,
+        reset_paper=args.reset_paper,
+        validate_live_orders=args.validate_live_orders,
     )

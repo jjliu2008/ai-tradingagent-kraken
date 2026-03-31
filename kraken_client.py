@@ -11,6 +11,8 @@ from pathlib import Path
 
 def _candidate_binaries() -> list[str]:
     candidates: list[str] = []
+    repo_bin = Path(__file__).resolve().parent / "bin" / "kraken"
+    candidates.append(str(repo_bin))
     env_bin = os.environ.get("KRAKEN_BIN")
     if env_bin:
         candidates.append(env_bin)
@@ -149,6 +151,7 @@ def order_buy(
     price: float | None = None,
     post_only: bool = False,
     client_order_id: str | None = None,
+    validate: bool = False,
 ) -> dict:
     args = ["order", "buy", pair, f"{volume:.8f}", "--type", order_type]
     if price is not None:
@@ -157,6 +160,8 @@ def order_buy(
         args += ["--oflags", "post"]
     if client_order_id:
         args += ["--cl-ord-id", client_order_id]
+    if validate:
+        args += ["--validate"]
     return _run(args)
 
 
@@ -167,6 +172,7 @@ def order_sell(
     price: float | None = None,
     post_only: bool = False,
     client_order_id: str | None = None,
+    validate: bool = False,
 ) -> dict:
     args = ["order", "sell", pair, f"{volume:.8f}", "--type", order_type]
     if price is not None:
@@ -175,6 +181,8 @@ def order_sell(
         args += ["--oflags", "post"]
     if client_order_id:
         args += ["--cl-ord-id", client_order_id]
+    if validate:
+        args += ["--validate"]
     return _run(args)
 
 

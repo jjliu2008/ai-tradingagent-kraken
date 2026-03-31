@@ -4,3 +4,5 @@ __pycache__/
 *.pyo
 data_cache/
 screen_results_*.csv
+.venv/
+runtime/

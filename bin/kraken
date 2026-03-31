@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+API_BASE = os.environ.get("KRAKEN_API_URL", "https://api.kraken.com")
+PAPER_STATE_PATH = Path(os.environ.get("KRAKEN_PAPER_STATE", "~/.local/state/kraken-paper/state.json")).expanduser()
+PAPER_FEE_RATE = float(os.environ.get("KRAKEN_PAPER_FEE_RATE", "0.0026"))
+
+
+def emit(payload: Any, code: int = 0) -> None:
+    print(json.dumps(payload))
+    raise SystemExit(code)
+
+
+def parse_argv(argv: list[str]) -> tuple[list[str], dict[str, Any]]:
+    positionals: list[str] = []
+    options: dict[str, Any] = {}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in {"-o", "--output"}:
+            i += 2
+            continue
+        if token.startswith("--"):
+            key = token[2:].replace("-", "_")
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                options[key] = argv[i + 1]
+                i += 2
+            else:
+                options[key] = True
+                i += 1
+            continue
+        positionals.append(token)
+        i += 1
+    return positionals, options
+
+
+def public_get(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    query = urllib.parse.urlencode({k: str(v) for k, v in params.items() if v is not None})
+    url = f"{API_BASE}/0/public/{method}?{query}"
+    with urllib.request.urlopen(url, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("error"):
+        emit({"error": payload["error"]}, 1)
+    return payload["result"]
+
+
+def private_post(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.environ.get("KRAKEN_API_KEY")
+    api_secret = os.environ.get("KRAKEN_API_SECRET")
+    if not api_key or not api_secret:
+        emit({"error": f"Missing credentials for private method {method}"}, 1)
+
+    nonce = str(int(time.time() * 1000))
+    body = {k: str(v) for k, v in params.items() if v is not None}
+    body["nonce"] = nonce
+    postdata = urllib.parse.urlencode(body)
+    path = f"/0/private/{method}"
+    encoded = (nonce + postdata).encode("utf-8")
+    message = path.encode("utf-8") + hashlib.sha256(encoded).digest()
+    secret = base64.b64decode(api_secret)
+    signature = base64.b64encode(hmac.new(secret, message, hashlib.sha512).digest()).decode("utf-8")
+
+    request = urllib.request.Request(
+        f"{API_BASE}{path}",
+        data=postdata.encode("utf-8"),
+        headers={
+            "API-Key": api_key,
+            "API-Sign": signature,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("error"):
+        emit({"error": payload["error"]}, 1)
+    return payload["result"]
+
+
+def quote_currency(pair: str) -> str:
+    for suffix in ("USD", "USDT", "EUR", "GBP"):
+        if pair.endswith(suffix):
+            return suffix
+    return "USD"
+
+
+def base_currency(pair: str) -> str:
+    quote = quote_currency(pair)
+    return pair[: -len(quote)]
+
+
+def ensure_paper_state() -> dict[str, Any]:
+    if PAPER_STATE_PATH.exists():
+        return json.loads(PAPER_STATE_PATH.read_text(encoding="utf-8"))
+    return {
+        "starting_balance": 10000.0,
+        "fee_rate": PAPER_FEE_RATE,
+        "balances": {"USD": 10000.0},
+        "open_orders": [],
+        "trades": [],
+        "sequence": 0,
+    }
+
+
+def save_paper_state(state: dict[str, Any]) -> None:
+    PAPER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PAPER_STATE_PATH.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def next_id(state: dict[str, Any], prefix: str) -> str:
+    state["sequence"] = int(state.get("sequence", 0)) + 1
+    return f"{prefix}_{state['sequence']}"
+
+
+def get_ticker_price(pair: str) -> float:
+    ticker = public_get("Ticker", {"pair": pair})
+    pair_key = next(iter(ticker))
+    return float(ticker[pair_key]["c"][0])
+
+
+def get_best_bid_ask(pair: str) -> tuple[float, float]:
+    orderbook = public_get("Depth", {"pair": pair, "count": 5})
+    pair_key = next(iter(orderbook))
+    payload = orderbook[pair_key]
+    best_bid = float(payload["bids"][0][0]) if payload.get("bids") else 0.0
+    best_ask = float(payload["asks"][0][0]) if payload.get("asks") else 0.0
+    return best_bid, best_ask
+
+
+def apply_fill(state: dict[str, Any], order: dict[str, Any], fill_price: float) -> dict[str, Any]:
+    balances = state.setdefault("balances", {"USD": state.get("starting_balance", 10000.0)})
+    fee_rate = float(state.get("fee_rate", PAPER_FEE_RATE))
+    volume = float(order["volume"])
+    pair = str(order["pair"])
+    side = str(order["side"])
+    quote = quote_currency(pair)
+    base = base_currency(pair)
+    gross = fill_price * volume
+    fee = gross * fee_rate
+
+    balances.setdefault(quote, 0.0)
+    balances.setdefault(base, 0.0)
+
+    if side == "buy":
+        total_cost = gross + fee
+        if balances[quote] < total_cost:
+            emit({"error": f"Insufficient {quote} balance for paper buy"}, 1)
+        balances[quote] -= total_cost
+        balances[base] += volume
+    else:
+        if balances[base] < volume:
+            emit({"error": f"Insufficient {base} balance for paper sell"}, 1)
+        balances[base] -= volume
+        balances[quote] += gross - fee
+
+    trade = {
+        "id": next_id(state, "trade"),
+        "order_id": order["id"],
+        "pair": pair,
+        "side": side,
+        "type": order["type"],
+        "volume": volume,
+        "price": fill_price,
+        "fee": fee,
+        "time": int(time.time()),
+    }
+    state.setdefault("trades", []).append(trade)
+    return trade
+
+
+def sweep_paper_orders(state: dict[str, Any]) -> None:
+    remaining: list[dict[str, Any]] = []
+    for order in state.get("open_orders", []):
+        if order.get("type") != "limit":
+            remaining.append(order)
+            continue
+        best_bid, best_ask = get_best_bid_ask(str(order["pair"]))
+        limit_price = float(order["price"])
+        should_fill = False
+        fill_price = limit_price
+        if order["side"] == "buy" and best_ask and best_ask <= limit_price:
+            should_fill = True
+            fill_price = min(limit_price, best_ask)
+        if order["side"] == "sell" and best_bid and best_bid >= limit_price:
+            should_fill = True
+            fill_price = max(limit_price, best_bid)
+        if should_fill:
+            apply_fill(state, order, fill_price)
+        else:
+            remaining.append(order)
+    state["open_orders"] = remaining
+
+
+def paper_init(balance: float) -> None:
+    state = {
+        "starting_balance": balance,
+        "fee_rate": PAPER_FEE_RATE,
+        "balances": {"USD": balance},
+        "open_orders": [],
+        "trades": [],
+        "sequence": 0,
+    }
+    save_paper_state(state)
+    emit({"starting_balance": balance, "fee_rate": PAPER_FEE_RATE})
+
+
+def paper_submit(side: str, pair: str, volume: float, order_type: str, price: float | None) -> None:
+    state = ensure_paper_state()
+    order = {
+        "id": next_id(state, "paper_order"),
+        "pair": pair,
+        "side": side,
+        "type": order_type,
+        "volume": volume,
+        "price": price,
+        "created_at": int(time.time()),
+        "status": "open",
+    }
+    if order_type == "market":
+        fill_price = get_ticker_price(pair)
+        trade = apply_fill(state, order, fill_price)
+        save_paper_state(state)
+        emit({"id": order["id"], "order_id": order["id"], "status": "filled", "price": trade["price"]})
+
+    if price is None:
+        emit({"error": "Limit orders require --price"}, 1)
+
+    state.setdefault("open_orders", []).append(order)
+    save_paper_state(state)
+    emit({"id": order["id"], "order_id": order["id"], "status": "open", "price": price})
+
+
+def paper_orders() -> None:
+    state = ensure_paper_state()
+    sweep_paper_orders(state)
+    save_paper_state(state)
+    emit({"open_orders": state.get("open_orders", [])})
+
+
+def paper_cancel(order_id: str) -> None:
+    state = ensure_paper_state()
+    before = len(state.get("open_orders", []))
+    state["open_orders"] = [order for order in state.get("open_orders", []) if order.get("id") != order_id]
+    save_paper_state(state)
+    emit({"order_id": order_id, "canceled": len(state["open_orders"]) != before})
+
+
+def paper_history() -> None:
+    state = ensure_paper_state()
+    sweep_paper_orders(state)
+    save_paper_state(state)
+    emit({"trades": state.get("trades", [])})
+
+
+def paper_balance() -> None:
+    state = ensure_paper_state()
+    emit(state.get("balances", {}))
+
+
+def paper_status() -> None:
+    state = ensure_paper_state()
+    sweep_paper_orders(state)
+    balances = state.get("balances", {})
+    current_value = 0.0
+    for asset, amount in balances.items():
+        amount_f = float(amount)
+        if asset in {"USD", "USDT"}:
+            current_value += amount_f
+            continue
+        pair = f"{asset}USD"
+        try:
+            current_value += amount_f * get_ticker_price(pair)
+        except Exception:
+            pass
+    starting_balance = float(state.get("starting_balance", 0.0))
+    unrealized = 0.0 if starting_balance <= 0 else (current_value - starting_balance) / starting_balance
+    save_paper_state(state)
+    emit(
+        {
+            "starting_balance": starting_balance,
+            "current_value": round(current_value, 8),
+            "unrealized_pnl_pct": unrealized,
+            "open_orders": len(state.get("open_orders", [])),
+            "fee_rate": float(state.get("fee_rate", PAPER_FEE_RATE)),
+            "balances": balances,
+        }
+    )
+
+
+def live_add_order(side: str, pair: str, volume: float, options: dict[str, Any]) -> None:
+    order_type = str(options.get("type", "market"))
+    params: dict[str, Any] = {
+        "pair": pair,
+        "type": side,
+        "ordertype": order_type,
+        "volume": volume,
+    }
+    if "price" in options:
+        params["price"] = options["price"]
+    if "oflags" in options:
+        params["oflags"] = options["oflags"]
+    if "cl_ord_id" in options:
+        params["cl_ord_id"] = options["cl_ord_id"]
+    if options.get("validate"):
+        params["validate"] = "true"
+    emit(private_post("AddOrder", params))
+
+
+def command_main(argv: list[str]) -> None:
+    positionals, options = parse_argv(argv)
+    if not positionals:
+        emit({"error": "No command provided"}, 1)
+
+    head = positionals[0]
+    if head == "market" and len(positionals) >= 2:
+        head = positionals[1]
+        positionals = positionals[1:]
+    if head == "account" and len(positionals) >= 2:
+        head = positionals[1]
+        positionals = positionals[1:]
+
+    if head == "ohlc":
+        emit(public_get("OHLC", {"pair": positionals[1], "interval": options.get("interval", 1), "since": options.get("since")}))
+    if head == "orderbook":
+        emit(public_get("Depth", {"pair": positionals[1], "count": options.get("count", 5)}))
+    if head == "ticker":
+        emit(public_get("Ticker", {"pair": positionals[1]}))
+
+    if head == "paper":
+        if len(positionals) < 2:
+            emit({"error": "Missing paper subcommand"}, 1)
+        sub = positionals[1]
+        if sub == "init":
+            paper_init(float(options.get("balance", 10000.0)))
+        if sub == "buy":
+            paper_submit("buy", positionals[2], float(positionals[3]), str(options.get("type", "market")), float(options["price"]) if "price" in options else None)
+        if sub == "sell":
+            paper_submit("sell", positionals[2], float(positionals[3]), str(options.get("type", "market")), float(options["price"]) if "price" in options else None)
+        if sub == "orders":
+            paper_orders()
+        if sub == "cancel":
+            paper_cancel(positionals[2])
+        if sub == "history":
+            paper_history()
+        if sub == "balance":
+            paper_balance()
+        if sub == "status":
+            paper_status()
+        emit({"error": f"Unsupported paper subcommand: {sub}"}, 1)
+
+    if head == "order":
+        if len(positionals) < 2:
+            emit({"error": "Missing order subcommand"}, 1)
+        sub = positionals[1]
+        if sub in {"buy", "sell"}:
+            live_add_order(sub, positionals[2], float(positionals[3]), options)
+        if sub == "cancel":
+            emit(private_post("CancelOrder", {"txid": positionals[2]}))
+        emit({"error": f"Unsupported order subcommand: {sub}"}, 1)
+
+    if head == "open-orders":
+        emit(private_post("OpenOrders", {}))
+    if head == "query-orders":
+        emit({"orders": private_post("QueryOrders", {"txid": positionals[1]})})
+    if head == "balance":
+        emit(private_post("Balance", {}))
+    if head == "positions":
+        emit(private_post("OpenPositions", {"docalcs": "true"}))
+
+    emit({"error": f"Unsupported command: {head}"}, 1)
+
+
+if __name__ == "__main__":
+    command_main(sys.argv[1:])
