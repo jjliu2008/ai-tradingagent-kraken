@@ -53,8 +53,9 @@ def map_signal(master: pd.DataFrame, interval_df: pd.DataFrame, strategy_name: s
         for candidate_name, mask, _ in ex.build_all_candidates(interval_df, interval)
     }
     signal_ts = interval_df.loc[masks[strategy_name], "ts"].astype(int)
+    effective_ts = signal_ts + (interval - strat.MASTER_INTERVAL_MINUTES) * 60
     mapped = pd.Series(False, index=master.index, dtype=bool)
-    mapped.loc[mapped.index.intersection(signal_ts)] = True
+    mapped.loc[mapped.index.intersection(effective_ts)] = True
     return mapped
 
 
@@ -183,7 +184,16 @@ def main() -> None:
         "atr30": map_signal(master, interval_cache[30], "atr_squeeze_expand", 30),
     }
 
-    reg60 = interval_cache[60].set_index("ts").reindex(master.index).ffill().infer_objects(copy=False)
+    reg60_source = interval_cache[60].copy()
+    reg60_source["effective_ts"] = (
+        reg60_source["ts"].astype(int) + (60 - strat.MASTER_INTERVAL_MINUTES) * 60
+    )
+    reg60 = (
+        reg60_source.set_index("effective_ts")
+        .reindex(master.index)
+        .ffill()
+        .infer_objects(copy=False)
+    )
 
     constructions = {
         "baseline_15m_exec": signals["mb60"],

@@ -13,6 +13,7 @@ import strategy as strat
 
 @dataclass
 class BacktestTrade:
+    construction: str
     pair: str
     entry_bar: int
     entry_ts: int
@@ -159,13 +160,35 @@ def run_backtest(
     config: strat.StrategyConfig,
     commission_pct: float,
     slippage_pct: float,
+    construction: str = strat.DEFAULT_ENSEMBLE_CONSTRUCTION,
 ) -> list[BacktestTrade]:
-    strategy = strat.HourlyBreakoutStrategy(pair=pair, config=config)
-    df = strat.compute_features(df_raw, config=config)
+    df = strat.build_ensemble_frame(df_raw, construction=construction, config=config)
+    return run_backtest_frame(
+        pair=pair,
+        df=df,
+        config=config,
+        commission_pct=commission_pct,
+        slippage_pct=slippage_pct,
+        construction=construction,
+    )
+
+
+def run_backtest_frame(
+    pair: str,
+    df: pd.DataFrame,
+    config: strat.StrategyConfig,
+    commission_pct: float,
+    slippage_pct: float,
+    construction: str,
+) -> list[BacktestTrade]:
+    strategy = strat.TrendGateEnsembleStrategy(pair=pair, config=config, construction=construction)
+    if df.empty:
+        return []
+
     trades: list[BacktestTrade] = []
     pending_signal: strat.Signal | None = None
 
-    for i in range(config.warmup_bars, len(df)):
+    for i in range(strategy.min_master_bars, len(df)):
         window = df.iloc[: i + 1]
         row = window.iloc[-1]
         ts = int(row["ts"])
@@ -208,6 +231,7 @@ def run_backtest(
                 pnl_pct = (closed.realized_pnl_pct() or 0.0) - commission_pct - slippage_pct
                 trades.append(
                     BacktestTrade(
+                        construction=construction,
                         pair=pair,
                         entry_bar=closed.entry_bar,
                         entry_ts=closed.entry_ts,
@@ -228,9 +252,16 @@ def run_backtest(
                 )
             continue
 
-        signal = strategy.detect(window)
-        if signal is not None and i + 1 < len(df):
-            pending_signal = signal
+        if bool(row.get("entry_signal", False)) and i + 1 < len(df):
+            signal = strat.build_ensemble_signal(
+                pair,
+                df,
+                row_idx=i,
+                construction=construction,
+                bar_idx=i,
+            )
+            if signal is not None:
+                pending_signal = signal
 
     return trades
 
@@ -265,7 +296,7 @@ def report(all_trades: list[BacktestTrade]) -> None:
     reasons = pd.Series([trade.exit_reason for trade in all_trades]).value_counts()
 
     print(f"\n{'=' * 70}")
-    print(f" BREAKOUT BACKTEST | trades={len(all_trades)}")
+    print(f" ENSEMBLE BACKTEST | trades={len(all_trades)}")
     print(f"{'=' * 70}")
     print(f" Net PnL:      {np.sum(pnls):.3%}")
     print(f" Win rate:     {(np.mean(np.asarray(pnls) > 0)):.1%}")
@@ -305,9 +336,10 @@ def report(all_trades: list[BacktestTrade]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Backtest GIGAUSD hourly-breakout baseline")
+    parser = argparse.ArgumentParser(description="Backtest the GIGAUSD ensemble baseline")
     parser.add_argument("--pairs", default="GIGAUSD")
-    parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--interval", type=int, default=strat.MASTER_INTERVAL_MINUTES)
+    parser.add_argument("--construction", default=strat.DEFAULT_ENSEMBLE_CONSTRUCTION)
     parser.add_argument("--history-days", type=int, help="Fetch a longer history window by aggregating Kraken public trades.")
     parser.add_argument("--end-ts", type=int, help="UTC unix timestamp marking the end of the fetched history window.")
     parser.add_argument("--trade-count", type=int, default=5000)
@@ -364,8 +396,9 @@ def main() -> None:
             config=config,
             commission_pct=args.commission_pct,
             slippage_pct=args.slippage_pct,
+            construction=args.construction,
         )
-        print(f"  {pair}: {len(trades)} trades")
+        print(f"  {pair} [{args.construction}]: {len(trades)} trades")
         all_trades.extend(trades)
 
     report(all_trades)

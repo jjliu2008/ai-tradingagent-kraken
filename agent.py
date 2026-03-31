@@ -29,15 +29,16 @@ STOPLIKE_EXIT_REASONS = {"STOP_LOSS", "TREND_LOST"}
 
 
 SYSTEM_PROMPT = """\
-You are the execution filter for a deterministic crypto hourly breakout long strategy.
+You are the execution filter for a deterministic crypto 15-minute momentum-confluence long strategy.
 
 The rule engine already found a candidate. Your job is to accept or reject it, set size, and choose
 whether the exit policy should be "fast" or "standard". Do not invent new trades.
 
 Historical note from local screening:
-- The strongest baseline was GIGAUSD on 60m bars.
-- Winners tended to have an existing uptrend, compressed volatility, a close above the prior 12-bar high, strong 6-bar momentum, above-average volume, and a close near the bar high.
-- Weak breakouts usually had poor close quality, no real volume expansion, or broad risk-off behavior in related meme pairs.
+- The live baseline is GIGAUSD on a 15m execution frame.
+- The current default construction is `tc15_tighter_volume_cap`, a 15m triple-confluence breakout that skips the most extreme volume spikes.
+- Higher-quality trades usually had trend already up, MACD histogram rising, compressed volatility, above-average volume, and a close near the bar high.
+- Weak trades usually had loose closes, weak volume, failed follow-through, or were already too extended relative to VWAP.
 
 Respond with exactly one JSON object and no markdown:
 {
@@ -58,7 +59,7 @@ Rules:
 
 
 EXIT_REVIEW_PROMPT = """\
-You are reviewing the outcome of a deterministic crypto breakout trade.
+You are reviewing the outcome of a deterministic crypto momentum-confluence trade.
 Reply in one short sentence explaining whether the exit was appropriate.
 """
 
@@ -508,10 +509,11 @@ def build_ai_snapshot(
     portfolio: dict,
     fee_hurdle_pct: float,
     interval_minutes: int,
+    construction: str,
 ) -> dict:
     return {
         "strategy": {
-            "name": "hourly_breakout_long",
+            "name": construction,
             "interval_minutes": interval_minutes,
             "fee_hurdle_pct": round(fee_hurdle_pct, 6),
         },
@@ -519,8 +521,11 @@ def build_ai_snapshot(
             "pair": signal.pair,
             "price": round(signal.price, 6),
             "signal_type": signal.signal_type,
+            "component_tags": list(signal.component_tags),
             "score": round(signal.score, 4),
             "trend_strength": round(signal.trend_strength, 6),
+            "gate_trend_strength": round(signal.gate_trend_strength, 6),
+            "gate_momentum_medium": round(signal.gate_momentum_medium, 6),
             "momentum_short": round(signal.momentum_short, 6),
             "momentum_medium": round(signal.momentum_medium, 6),
             "impulse_pct": round(signal.impulse_pct, 6),
@@ -610,7 +615,16 @@ def run(
     paper_init_balance: float,
     reset_paper: bool,
     validate_live_orders: bool,
+    construction: str,
 ) -> None:
+    if interval_minutes != strat.MASTER_INTERVAL_MINUTES:
+        raise RuntimeError(
+            f"The ensemble runner requires --interval {strat.MASTER_INTERVAL_MINUTES}."
+        )
+    if construction not in strat.ensemble_construction_names():
+        supported = ", ".join(strat.ensemble_construction_names())
+        raise RuntimeError(f"Unknown construction '{construction}'. Supported: {supported}")
+
     client: Optional[anthropic.Anthropic] = None
     if use_claude:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -626,7 +640,10 @@ def run(
     event_log_path = log_dir / "events.jsonl"
     summary_log_path = log_dir / "summary.jsonl"
 
-    strategies = {pair: strat.HourlyBreakoutStrategy(pair=pair, config=config) for pair in trade_pairs}
+    strategies = {
+        pair: strat.TrendGateEnsembleStrategy(pair=pair, config=config, construction=construction)
+        for pair in trade_pairs
+    }
     last_closed_bar_ts: dict[str, Optional[int]] = {pair: None for pair in trade_pairs}
     market_pairs = list(dict.fromkeys(trade_pairs + context_pairs))
     pending_orders: dict[str, PendingOrder] = {}
@@ -671,7 +688,7 @@ def run(
         )
 
     print(f"\n{'=' * 78}")
-    print(f" Hourly Breakout Agent | mode={mode} | interval={interval_minutes}m")
+    print(f" Ensemble Agent | mode={mode} | interval={interval_minutes}m")
     print(f"{'=' * 78}")
     print(f" Trade pairs: {', '.join(trade_pairs)}")
     print(f" Context pairs: {', '.join(context_pairs) if context_pairs else 'none'}")
@@ -681,10 +698,8 @@ def run(
         f"Maker exit timeout: {maker_exit_timeout_sec}s"
     )
     print(
-        f" Trend>={config.min_trend_strength:.2%} | "
-        f"Mom6>={config.min_momentum_medium:.2%} | "
-        f"Compress<={config.max_compression_ratio:.2f} | "
-        f"Vol>={config.min_volume_ratio:.2f}x | "
+        f" Entry model: {construction} | "
+        f"Stop={config.min_stop_pct:.2%} | Target={config.target_pct:.2%} | "
         f"Hold={config.max_hold_bars} bars"
     )
     print(f" Claude filter: {'on' if client else 'off'}")
@@ -701,6 +716,7 @@ def run(
         context_pairs=context_pairs,
         poll_seconds=poll_seconds,
         interval_minutes=interval_minutes,
+        construction=construction,
         max_positions=max_positions,
         notional_usd=notional_usd,
         validate_live_orders=validate_live_orders,
@@ -1251,6 +1267,7 @@ def run(
                                 portfolio=portfolio,
                                 fee_hurdle_pct=fee_hurdle_pct,
                                 interval_minutes=interval_minutes,
+                                construction=construction,
                             )
                             try:
                                 decision = ask_claude_signal(client, snapshot)
@@ -1280,6 +1297,9 @@ def run(
                             exit_mode=decision.exit_mode,
                             reason_tags=decision.reason_tags,
                             signal_score=signal.score,
+                            signal_type=signal.signal_type,
+                            component_tags=list(signal.component_tags),
+                            gate_trend_strength=signal.gate_trend_strength,
                         )
 
                         if not decision.should_trade:
@@ -1345,6 +1365,9 @@ def run(
                             size=size,
                             signal_score=signal.score,
                             exit_mode=decision.exit_mode,
+                            signal_type=signal.signal_type,
+                            component_tags=list(signal.component_tags),
+                            gate_trend_strength=signal.gate_trend_strength,
                         )
                         persist_state()
 
@@ -1383,11 +1406,12 @@ def run(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Kraken hourly breakout agent")
+    parser = argparse.ArgumentParser(description="Run the Kraken ensemble agent")
     parser.add_argument("--pairs", default=",".join(DEFAULT_PAIRS))
     parser.add_argument("--context-pairs", default=",".join(DEFAULT_CONTEXT_PAIRS))
     parser.add_argument("--mode", default="paper", choices=["paper", "live"])
-    parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--interval", type=int, default=strat.MASTER_INTERVAL_MINUTES, help="Base execution interval. The trend-gate ensemble requires 15.")
+    parser.add_argument("--construction", default=strat.DEFAULT_ENSEMBLE_CONSTRUCTION)
     parser.add_argument("--poll", type=int, default=60)
     parser.add_argument("--cycles", type=int, default=0, help="0 means run forever")
     parser.add_argument("--max-positions", type=int, default=1)
@@ -1450,4 +1474,5 @@ if __name__ == "__main__":
         paper_init_balance=args.paper_init_balance,
         reset_paper=args.reset_paper,
         validate_live_orders=args.validate_live_orders,
+        construction=args.construction,
     )

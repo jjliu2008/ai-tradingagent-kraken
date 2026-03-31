@@ -11,8 +11,6 @@ from pathlib import Path
 
 def _candidate_binaries() -> list[str]:
     candidates: list[str] = []
-    repo_bin = Path(__file__).resolve().parent / "bin" / "kraken"
-    candidates.append(str(repo_bin))
     env_bin = os.environ.get("KRAKEN_BIN")
     if env_bin:
         candidates.append(env_bin)
@@ -22,12 +20,22 @@ def _candidate_binaries() -> list[str]:
         candidates.append(which_bin)
 
     home = Path.home()
-    candidates.extend(
-        [
-            str(home / ".cargo" / "bin" / "kraken.exe"),
-            str(home / ".cargo" / "bin" / "kraken"),
-        ]
-    )
+    if os.name == "nt":
+        candidates.extend(
+            [
+                str(home / ".cargo" / "bin" / "kraken.exe"),
+                str(home / ".cargo" / "bin" / "kraken"),
+            ]
+        )
+    else:
+        repo_bin = Path(__file__).resolve().parent / "bin" / "kraken"
+        candidates.append(str(repo_bin))
+        candidates.extend(
+            [
+                str(home / ".cargo" / "bin" / "kraken"),
+                str(home / ".cargo" / "bin" / "kraken.exe"),
+            ]
+        )
     return candidates
 
 
