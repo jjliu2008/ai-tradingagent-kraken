@@ -15,6 +15,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import kraken_client as kraken
+import risk_guardrails as risk
 import strategy as strat
 
 load_dotenv()
@@ -26,6 +27,7 @@ DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 DEFAULT_LOG_DIR = "runtime"
 DEFAULT_STATE_FILE = "runtime/agent_state.json"
 STOPLIKE_EXIT_REASONS = {"STOP_LOSS", "TREND_LOST"}
+DEFAULT_RISK_CONFIG = risk.RiskConfig()
 
 
 SYSTEM_PROMPT = """\
@@ -500,6 +502,7 @@ def build_pair_snapshot(
         "close_location": round(float(last.get("close_location", 0.0)), 4),
         "obi": round(obi, 4),
         "spread_pct": round(spread_pct, 6),
+        "atr_pct": round(float(last.get("atr_pct", 0.0)), 6),
     }
 
 
@@ -507,6 +510,7 @@ def build_ai_snapshot(
     signal: strat.Signal,
     pair_contexts: dict[str, dict],
     portfolio: dict,
+    risk_snapshot: dict,
     fee_hurdle_pct: float,
     interval_minutes: int,
     construction: str,
@@ -547,6 +551,7 @@ def build_ai_snapshot(
             "open_orders": int(portfolio.get("open_orders", 0)),
             "fee_rate": round(float(portfolio.get("fee_rate", 0.0)), 6),
         },
+        "risk_snapshot": risk_snapshot,
     }
 
 
@@ -616,6 +621,7 @@ def run(
     reset_paper: bool,
     validate_live_orders: bool,
     construction: str,
+    risk_config: risk.RiskConfig,
 ) -> None:
     if interval_minutes != strat.MASTER_INTERVAL_MINUTES:
         raise RuntimeError(
@@ -702,10 +708,31 @@ def run(
         f"Stop={config.min_stop_pct:.2%} | Target={config.target_pct:.2%} | "
         f"Hold={config.max_hold_bars} bars"
     )
+
+
+def build_risk_config(args: argparse.Namespace) -> risk.RiskConfig:
+    return risk.RiskConfig(
+        max_position_notional_usd=args.risk_max_position_usd,
+        max_portfolio_concentration=args.risk_max_concentration,
+        daily_loss_limit_pct=args.risk_daily_loss_pct,
+        max_drawdown_pct=args.risk_max_drawdown_pct,
+        max_spread_pct=args.risk_max_spread_pct,
+        max_atr_pct=args.risk_max_atr_pct,
+        atr_soft_cap_pct=args.risk_atr_soft_cap_pct,
+        min_obi=args.risk_min_obi,
+        max_open_entry_orders=args.risk_max_open_entry_orders,
+    )
     print(f" Claude filter: {'on' if client else 'off'}")
     print(f" Event log: {event_log_path}")
     print(f" State file: {state_path} | Resume: {'on' if resume_state else 'off'}")
     print(f" Live validate-only: {'on' if validate_live_orders else 'off'}")
+    print(
+        " Risk guardrails: "
+        f"max_position=${risk_config.max_position_notional_usd:,.0f} | "
+        f"max_concentration={risk_config.max_portfolio_concentration:.0%} | "
+        f"daily_loss={risk_config.daily_loss_limit_pct:.0%} | "
+        f"max_dd={risk_config.max_drawdown_pct:.0%}"
+    )
     print(f"{'=' * 78}\n")
 
     append_event(
@@ -722,6 +749,7 @@ def run(
         validate_live_orders=validate_live_orders,
         state_file=str(state_path),
         resumed=resume_state,
+        risk_config=asdict(risk_config),
     )
     persist_state()
 
@@ -730,6 +758,7 @@ def run(
         try:
             portfolio = kraken.paper_status() if mode == "paper" else {}
             fee_hurdle_pct = 2 * (float(portfolio.get("fee_rate", fee_pct)) + slippage_pct)
+            now_ts = int(time.time())
             pair_contexts: dict[str, dict] = {}
             pair_frames: dict[str, pd.DataFrame] = {}
             live_prices: dict[str, float] = {}
@@ -836,6 +865,7 @@ def run(
                                     "exit": exit_price,
                                     "pnl_pct": pnl_pct,
                                     "reason": live_exit_reason,
+                                    "exit_ts": int(time.time()),
                                 }
                             )
                             pending_orders.pop(pair, None)
@@ -895,6 +925,7 @@ def run(
                                         "exit": exit_price,
                                         "pnl_pct": pnl_pct,
                                         "reason": pending.exit_reason,
+                                        "exit_ts": int(time.time()),
                                     }
                                 )
                                 print(
@@ -977,6 +1008,7 @@ def run(
                                     "exit": exit_price,
                                     "pnl_pct": pnl_pct,
                                     "reason": pending.exit_reason,
+                                    "exit_ts": fill_ts,
                                 }
                             )
                             print(
@@ -1042,6 +1074,7 @@ def run(
                                     "exit": exit_price,
                                     "pnl_pct": pnl_pct,
                                     "reason": exit_reason,
+                                    "exit_ts": int(time.time()),
                                 }
                             )
                             print(
@@ -1162,6 +1195,7 @@ def run(
                                     "exit": exit_price,
                                     "pnl_pct": pnl_pct,
                                     "reason": exit_reason,
+                                    "exit_ts": last_ts,
                                 }
                             )
                             print(
@@ -1259,12 +1293,21 @@ def run(
                     for pair, signal in ranked[:slots]:
                         if pair in pending_orders:
                             continue
+                        pair_snapshot = pair_contexts[pair]
                         decision = default_decision()
                         if client is not None:
+                            risk_snapshot = risk.portfolio_risk_snapshot(
+                                portfolio=portfolio,
+                                trade_log=trade_log,
+                                strategies=strategies,
+                                pending_orders=pending_orders,
+                                now_ts=now_ts,
+                            )
                             snapshot = build_ai_snapshot(
                                 signal=signal,
                                 pair_contexts=pair_contexts,
                                 portfolio=portfolio,
+                                risk_snapshot=risk_snapshot,
                                 fee_hurdle_pct=fee_hurdle_pct,
                                 interval_minutes=interval_minutes,
                                 construction=construction,
@@ -1305,7 +1348,42 @@ def run(
                         if not decision.should_trade:
                             continue
 
-                        size = compute_order_size(signal.price, notional_usd * decision.size_mult)
+                        proposed_notional = notional_usd * decision.size_mult
+                        guardrail = risk.evaluate_entry(
+                            pair=pair,
+                            pair_snapshot=pair_snapshot,
+                            portfolio=portfolio,
+                            trade_log=trade_log,
+                            strategies=strategies,
+                            pending_orders=pending_orders,
+                            proposed_notional_usd=proposed_notional,
+                            requested_size_mult=decision.size_mult,
+                            max_positions=max_positions,
+                            now_ts=now_ts,
+                            config=risk_config,
+                        )
+                        append_event(
+                            event_log_path,
+                            "risk_guardrails",
+                            cycle=cycle,
+                            pair=pair,
+                            proposed_notional_usd=proposed_notional,
+                            requested_size_mult=decision.size_mult,
+                            approved_size_mult=guardrail.approved_size_mult,
+                            allowed=guardrail.allowed,
+                            summary=guardrail.summary,
+                            checks=[asdict(check) for check in guardrail.checks],
+                        )
+                        print(
+                            f"  Guardrails {pair}: allowed={guardrail.allowed} | "
+                            f"approved_size_mult={guardrail.approved_size_mult:.2f} | "
+                            f"{guardrail.summary}"
+                        )
+                        if not guardrail.allowed:
+                            continue
+
+                        effective_size_mult = min(decision.size_mult, guardrail.approved_size_mult)
+                        size = compute_order_size(signal.price, notional_usd * effective_size_mult)
                         if size <= 0:
                             print(f"  SKIP {pair} | invalid order size")
                             continue
@@ -1331,6 +1409,7 @@ def run(
                                 size=size,
                                 limit_price=entry_price,
                                 signal_score=signal.score,
+                                approved_size_mult=effective_size_mult,
                                 result=result,
                             )
                             print(
@@ -1353,7 +1432,8 @@ def run(
                         )
                         print(
                             f"  PLACE ENTRY {pair} | id={order_id} | size={size:.8f} | "
-                            f"limit={_format_price(entry_price)} | score={signal.score:.2f}"
+                            f"limit={_format_price(entry_price)} | score={signal.score:.2f} | "
+                            f"risk_size_mult={effective_size_mult:.2f}"
                         )
                         append_event(
                             event_log_path,
@@ -1364,6 +1444,7 @@ def run(
                             limit_price=entry_price,
                             size=size,
                             signal_score=signal.score,
+                            approved_size_mult=effective_size_mult,
                             exit_mode=decision.exit_mode,
                             signal_type=signal.signal_type,
                             component_tags=list(signal.component_tags),
@@ -1437,6 +1518,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-pct", type=float, default=strat.DEFAULT_CONFIG.target_pct)
     parser.add_argument("--hold-bars", type=int, default=strat.DEFAULT_CONFIG.max_hold_bars)
     parser.add_argument("--fast-hold-bars", type=int, default=strat.DEFAULT_CONFIG.fast_max_hold_bars)
+    parser.add_argument("--risk-max-position-usd", type=float, default=DEFAULT_RISK_CONFIG.max_position_notional_usd)
+    parser.add_argument("--risk-max-concentration", type=float, default=DEFAULT_RISK_CONFIG.max_portfolio_concentration)
+    parser.add_argument("--risk-daily-loss-pct", type=float, default=DEFAULT_RISK_CONFIG.daily_loss_limit_pct)
+    parser.add_argument("--risk-max-drawdown-pct", type=float, default=DEFAULT_RISK_CONFIG.max_drawdown_pct)
+    parser.add_argument("--risk-max-spread-pct", type=float, default=DEFAULT_RISK_CONFIG.max_spread_pct)
+    parser.add_argument("--risk-max-atr-pct", type=float, default=DEFAULT_RISK_CONFIG.max_atr_pct)
+    parser.add_argument("--risk-atr-soft-cap-pct", type=float, default=DEFAULT_RISK_CONFIG.atr_soft_cap_pct)
+    parser.add_argument("--risk-min-obi", type=float, default=DEFAULT_RISK_CONFIG.min_obi)
+    parser.add_argument("--risk-max-open-entry-orders", type=int, default=DEFAULT_RISK_CONFIG.max_open_entry_orders)
     return parser.parse_args()
 
 
@@ -1445,6 +1535,7 @@ if __name__ == "__main__":
     trade_pairs = [pair.strip() for pair in args.pairs.split(",") if pair.strip()]
     context_pairs = [pair.strip() for pair in args.context_pairs.split(",") if pair.strip()]
     config = build_config(args)
+    risk_config = build_risk_config(args)
     log_dir = Path(args.log_dir)
     state_path = Path(args.state_file)
 
@@ -1475,4 +1566,5 @@ if __name__ == "__main__":
         reset_paper=args.reset_paper,
         validate_live_orders=args.validate_live_orders,
         construction=args.construction,
+        risk_config=risk_config,
     )
