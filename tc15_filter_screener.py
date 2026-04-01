@@ -59,6 +59,11 @@ def main() -> None:
     not_loose = (frame["compression_ratio"] <= 1.0).fillna(False)
     not_too_extended = (frame["distance_from_vwap"] <= 0.03).fillna(False)
     not_far_from_vwap = (frame["distance_from_vwap"] <= 0.02).fillna(False)
+    mb60 = frame["signal_mb60"].fillna(False)
+    atr30 = frame["signal_atr30"].fillna(False)
+    tc30 = frame["signal_tc30"].fillna(False)
+    vst60 = frame["signal_vst60"].fillna(False)
+    tc15_cap = base & capped_volume_tight
 
     candidates = {
         "tc15_only": base,
@@ -76,6 +81,17 @@ def main() -> None:
         "tc15_quality_stack_loose": base & strong_close & capped_volume & not_loose & not_too_extended,
         "tc15_mom_and_no_exhaust": base & stronger_60m_mom & capped_volume & not_extreme_close,
         "tc15_mom_no_exhaust_vwap": base & stronger_60m_mom & capped_volume & not_extreme_close & not_too_extended,
+        "tc15_cap_or_mb60": tc15_cap | mb60,
+        "tc15_cap_or_atr30": tc15_cap | atr30,
+        "tc15_cap_or_mb60_or_atr30": tc15_cap | mb60 | atr30,
+        "tc15_cap_or_tc30": tc15_cap | tc30,
+        "tc15_cap_or_vst60": tc15_cap | vst60,
+        "tc15_cap_pos60": tc15_cap & positive_60m_mom,
+        "tc15_cap_strong60": tc15_cap & stronger_60m_mom,
+        "tc15_cap_no_exhaust_close": tc15_cap & not_extreme_close,
+        "tc15_cap_no_far_vwap": tc15_cap & not_too_extended,
+        "tc15_cap_plus_mb60_strong60": (tc15_cap | mb60) & positive_60m_mom,
+        "tc15_cap_plus_atr30_strong60": (tc15_cap | atr30) & positive_60m_mom,
     }
 
     rows: list[dict] = []

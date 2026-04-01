@@ -77,6 +77,13 @@ def _public_get(endpoint: str, params: dict[str, str | int]) -> dict:
     return payload["result"]
 
 
+def fetch_asset_pairs(info: str = "info") -> dict:
+    params: dict[str, str | int] = {}
+    if info:
+        params["info"] = info
+    return _public_get("AssetPairs", params)
+
+
 def _format_decimal(value: float, places: int = 10) -> str:
     text = f"{value:.{places}f}"
     if "." in text:
@@ -104,6 +111,14 @@ def fetch_orderbook(pair: str) -> dict:
 
 def fetch_ticker(pair: str) -> dict:
     return _run(["ticker", pair])
+
+
+def fetch_public_ticker(pairs: list[str] | tuple[str, ...] | str) -> dict:
+    if isinstance(pairs, str):
+        pair_text = pairs
+    else:
+        pair_text = ",".join(pairs)
+    return _public_get("Ticker", {"pair": pair_text})
 
 
 def paper_init(balance: float = 10000.0) -> dict:

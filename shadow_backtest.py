@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pairs", default="GIGAUSD")
     parser.add_argument(
         "--constructions",
-        default="baseline_mb60,tc15_tighter_volume_cap",
+        default="tc15_tighter_volume_cap,tc15_cap_or_mb60",
         help="Comma-separated ensemble construction names",
     )
     parser.add_argument("--interval", type=int, default=strat.MASTER_INTERVAL_MINUTES)
