@@ -291,7 +291,7 @@ def resample_ohlcv(df: pd.DataFrame, interval: int) -> pd.DataFrame:
     )
     agg["vwap_k"] = agg["pv"] / agg["volume"].replace(0, np.nan)
     agg = agg.dropna(subset=["vwap_k"]).reset_index()
-    agg["ts"] = agg["dt"].astype("int64") // 1_000_000_000
+    agg["ts"] = agg["dt"].map(lambda value: int(value.timestamp()))
     return agg[raw_cols].reset_index(drop=True)
 
 

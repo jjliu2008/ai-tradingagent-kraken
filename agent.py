@@ -708,20 +708,6 @@ def run(
         f"Stop={config.min_stop_pct:.2%} | Target={config.target_pct:.2%} | "
         f"Hold={config.max_hold_bars} bars"
     )
-
-
-def build_risk_config(args: argparse.Namespace) -> risk.RiskConfig:
-    return risk.RiskConfig(
-        max_position_notional_usd=args.risk_max_position_usd,
-        max_portfolio_concentration=args.risk_max_concentration,
-        daily_loss_limit_pct=args.risk_daily_loss_pct,
-        max_drawdown_pct=args.risk_max_drawdown_pct,
-        max_spread_pct=args.risk_max_spread_pct,
-        max_atr_pct=args.risk_max_atr_pct,
-        atr_soft_cap_pct=args.risk_atr_soft_cap_pct,
-        min_obi=args.risk_min_obi,
-        max_open_entry_orders=args.risk_max_open_entry_orders,
-    )
     print(f" Claude filter: {'on' if client else 'off'}")
     print(f" Event log: {event_log_path}")
     print(f" State file: {state_path} | Resume: {'on' if resume_state else 'off'}")
@@ -1484,6 +1470,20 @@ def build_risk_config(args: argparse.Namespace) -> risk.RiskConfig:
             break
 
         time.sleep(poll_seconds)
+
+
+def build_risk_config(args: argparse.Namespace) -> risk.RiskConfig:
+    return risk.RiskConfig(
+        max_position_notional_usd=args.risk_max_position_usd,
+        max_portfolio_concentration=args.risk_max_concentration,
+        daily_loss_limit_pct=args.risk_daily_loss_pct,
+        max_drawdown_pct=args.risk_max_drawdown_pct,
+        max_spread_pct=args.risk_max_spread_pct,
+        max_atr_pct=args.risk_max_atr_pct,
+        atr_soft_cap_pct=args.risk_atr_soft_cap_pct,
+        min_obi=args.risk_min_obi,
+        max_open_entry_orders=args.risk_max_open_entry_orders,
+    )
 
 
 def parse_args() -> argparse.Namespace:
