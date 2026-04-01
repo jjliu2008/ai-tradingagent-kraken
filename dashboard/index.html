@@ -31,34 +31,35 @@
         <section class="panel hero-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-label">Portfolio</p>
-              <h2>Account Status</h2>
+              <p class="panel-label">Historical Performance</p>
+              <h2>Strategy Baseline</h2>
+              <p class="panel-subtitle" id="history-label">Backtest history (120d)</p>
             </div>
             <div class="inline-kv">
-              <span>Cycle</span>
-              <strong id="cycle">-</strong>
+              <span>Construction</span>
+              <strong id="history-construction">-</strong>
             </div>
           </div>
           <div class="metric-grid">
             <article class="metric-card">
-              <span class="metric-label">Current Value</span>
-              <strong class="metric-value" id="current-value">$0.00</strong>
-              <span class="metric-foot" id="starting-balance">Start $0.00</span>
+              <span class="metric-label">Net PnL</span>
+              <strong class="metric-value" id="history-net">0.00%</strong>
+              <span class="metric-foot" id="history-recent-net">Recent 60d 0.00%</span>
             </article>
             <article class="metric-card">
-              <span class="metric-label">Realized PnL</span>
-              <strong class="metric-value" id="realized-pnl">0.00%</strong>
-              <span class="metric-foot" id="open-position-count">0 open positions</span>
+              <span class="metric-label">Win Rate</span>
+              <strong class="metric-value" id="history-win">0.00%</strong>
+              <span class="metric-foot" id="history-trades">0 trades</span>
             </article>
             <article class="metric-card">
-              <span class="metric-label">Monitoring</span>
-              <strong class="metric-value" id="monitored-pairs">-</strong>
-              <span class="metric-foot" id="interval-label">15m cadence</span>
+              <span class="metric-label">Max Drawdown</span>
+              <strong class="metric-value" id="history-dd">0.00%</strong>
+              <span class="metric-foot" id="history-avg">Avg trade 0.00%</span>
             </article>
             <article class="metric-card">
-              <span class="metric-label">Candidates Rejected</span>
-              <strong class="metric-value" id="rejected-count">0</strong>
-              <span class="metric-foot" id="detected-count">0 evaluated this session</span>
+              <span class="metric-label">Live Session</span>
+              <strong class="metric-value" id="cycle">-</strong>
+              <span class="metric-foot" id="live-session-meta">0 candidates rejected</span>
             </article>
           </div>
         </section>
@@ -87,8 +88,9 @@
         <section class="panel chart-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-label">Performance</p>
+              <p class="panel-label">Historical Equity</p>
               <h2>Equity Curve</h2>
+              <p class="panel-subtitle">Backtest history (120d), clearly separate from live paper execution.</p>
             </div>
           </div>
           <div class="chart-wrap">
@@ -166,20 +168,22 @@
         <section class="panel trades-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-label">Execution</p>
+              <p class="panel-label">Execution History</p>
               <h2>Trade Log</h2>
+              <p class="panel-subtitle">Historical baseline trades are tagged. Live paper trades appear here with a live tag when they occur.</p>
             </div>
           </div>
           <div class="table-wrap">
             <table class="data-table">
               <thead>
                 <tr>
+                  <th>Source</th>
                   <th>Pair</th>
                   <th>Entry</th>
                   <th>Exit</th>
                   <th>PnL</th>
                   <th>Reason</th>
-                  <th>Exit Review</th>
+                  <th>Context</th>
                 </tr>
               </thead>
               <tbody id="trades-body"></tbody>

@@ -70,6 +70,13 @@ body {
   line-height: 1.03;
 }
 
+.panel-subtitle {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 .hero-text {
   max-width: 680px;
   margin: 14px 0 0;

@@ -214,18 +214,19 @@ function renderTrades(items) {
   const body = document.getElementById("trades-body");
   if (!body) return;
   if (!items.length) {
-    body.innerHTML = `<tr><td colspan="6" class="empty-state">No closed trades yet.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" class="empty-state">No trades available yet.</td></tr>`;
     return;
   }
   body.innerHTML = items
     .map((trade) => `
       <tr>
+        <td><span class="pill ${trade.source === "live" ? "pill-trade" : "pill-warn"}">${trade.tag || slugLabel(trade.source || "historical")}</span></td>
         <td><strong>${trade.pair || "-"}</strong></td>
         <td class="mono">${formatNumber(trade.entry, trade.entry < 1 ? 6 : 2)}</td>
         <td class="mono">${formatNumber(trade.exit, trade.exit < 1 ? 6 : 2)}</td>
         <td class="${toneClass(trade.pnl_pct || 0)}">${formatSignedPercent(trade.pnl_pct || 0, 2)}</td>
         <td>${slugLabel(trade.reason || "-")}</td>
-        <td>${trade.ai_review || "-"}</td>
+        <td>${trade.ai_review || trade.context || "-"}</td>
       </tr>
     `)
     .join("");
@@ -252,7 +253,7 @@ function renderEvents(items) {
     .join("");
 }
 
-function renderStatus(status, monitoring, risk, decisions, trades, events) {
+function renderStatus(status, monitoring, risk, decisions, trades, events, history) {
   setText("agent-mode", `${String(status.mode || "paper").toUpperCase()} MODE`);
   setText(
     "agent-construction",
@@ -260,23 +261,34 @@ function renderStatus(status, monitoring, risk, decisions, trades, events) {
   );
   setText("last-updated", `Updated ${formatTime(status.generated_at)}`);
   setText("cycle", status.cycle ?? "-");
-  setText("current-value", formatCurrency(status.current_value));
-  setText("starting-balance", `Start ${formatCurrency(status.starting_balance)}`);
 
-  const pnlNode = document.getElementById("realized-pnl");
-  if (pnlNode) {
-    pnlNode.textContent = formatSignedPercent(status.realized_pnl_pct || 0, 2);
-    pnlNode.className = `metric-value ${toneClass(status.realized_pnl_pct || 0)}`;
+  setText("history-label", history.label || "Backtest history");
+  setText("history-construction", history.construction || "-");
+  setText("history-recent-net", `Recent 60d ${formatSignedPercent(history.net_recent || 0, 2)}`);
+  setText("history-trades", `${history.trades_full || 0} trades`);
+  setText("history-avg", `Avg trade ${formatSignedPercent(history.avg_full || 0, 2)}`);
+  setText(
+    "live-session-meta",
+    `${status.candidate_stats?.rejected || 0} rejected | ${(status.monitored_pairs || []).join(", ") || "-"}`
+  );
+
+  const historyNetNode = document.getElementById("history-net");
+  if (historyNetNode) {
+    historyNetNode.textContent = formatSignedPercent(history.net_full || 0, 2);
+    historyNetNode.className = `metric-value ${toneClass(history.net_full || 0)}`;
   }
 
-  setText("open-position-count", `${status.open_position_count || 0} open positions`);
-  setText("monitored-pairs", (status.monitored_pairs || []).join(", ") || "-");
-  setText("interval-label", `${status.interval_minutes || "-"}m execution frame`);
-  setText("rejected-count", String(status.candidate_stats?.rejected || 0));
-  setText(
-    "detected-count",
-    `${status.candidate_stats?.detected || 0} evaluated this session`
-  );
+  const historyWinNode = document.getElementById("history-win");
+  if (historyWinNode) {
+    historyWinNode.textContent = formatPercent(history.win_full || 0, 1);
+    historyWinNode.className = "metric-value";
+  }
+
+  const historyDdNode = document.getElementById("history-dd");
+  if (historyDdNode) {
+    historyDdNode.textContent = formatSignedPercent(history.max_dd || 0, 2);
+    historyDdNode.className = `metric-value ${toneClass(history.max_dd || 0)}`;
+  }
 
   const reasonNode = document.getElementById("no-trade-reason");
   if (reasonNode) {
@@ -289,25 +301,40 @@ function renderStatus(status, monitoring, risk, decisions, trades, events) {
   );
 
   setHtml("top-candidate-card", renderTopCandidate(status.top_candidate));
-  renderChart(status.equity_curve || []);
+  renderChart(history.equity_curve || []);
   renderRisk(risk.utilization || []);
   renderMarketTable(monitoring);
   renderDecisions(decisions.items || []);
-  renderTrades(trades.items || []);
+  const liveTrades = (trades.items || []).map((trade) => ({
+    source: "live",
+    tag: "Live",
+    pair: trade.pair,
+    entry: trade.entry,
+    exit: trade.exit,
+    pnl_pct: trade.pnl_pct,
+    reason: trade.reason,
+    context: trade.ai_review || (trade.event_type ? slugLabel(trade.event_type) : "Paper trade"),
+  }));
+  const historicalTrades = (history.trades || []).map((trade) => ({
+    ...trade,
+    context: `${trade.bars_held || 0} bars | score ${formatNumber(trade.signal_score || 0, 2)}`,
+  }));
+  renderTrades([...liveTrades, ...historicalTrades]);
   renderEvents(events.items || []);
 }
 
 async function refresh() {
   try {
-    const [status, monitoring, risk, decisions, trades, events] = await Promise.all([
+    const [status, monitoring, risk, decisions, trades, events, history] = await Promise.all([
       fetchJson("/status"),
       fetchJson("/monitoring"),
       fetchJson("/risk"),
       fetchJson("/decisions?limit=8"),
       fetchJson("/trades?limit=8"),
       fetchJson("/events?limit=12"),
+      fetchJson("/history"),
     ]);
-    renderStatus(status, monitoring, risk, decisions, trades, events);
+    renderStatus(status, monitoring, risk, decisions, trades, events, history);
   } catch (error) {
     setText("agent-mode", "API OFFLINE");
     setText("no-trade-summary", `Dashboard could not load data: ${error.message}`);

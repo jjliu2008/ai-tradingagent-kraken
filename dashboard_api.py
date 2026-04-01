@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 from collections import deque
@@ -17,6 +18,12 @@ from fastapi.staticfiles import StaticFiles
 DEFAULT_LOG_DIR = Path(os.environ.get("DASHBOARD_LOG_DIR", "runtime/paper"))
 DEFAULT_STATE_FILE = Path(os.environ.get("DASHBOARD_STATE_FILE", "runtime/paper/state.json"))
 DEFAULT_UI_DIR = Path(os.environ.get("DASHBOARD_UI_DIR", "dashboard"))
+DEFAULT_BACKTEST_SUMMARY_FILE = Path(
+    os.environ.get("DASHBOARD_BACKTEST_SUMMARY_FILE", "dashboard_backtest_summary.csv")
+)
+DEFAULT_BACKTEST_TRADES_FILE = Path(
+    os.environ.get("DASHBOARD_BACKTEST_TRADES_FILE", "dashboard_backtest_trades.csv")
+)
 
 
 def _utc_now_iso() -> str:
@@ -82,6 +89,13 @@ def _session_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if events[idx].get("event") == "agent_started":
             return events[idx:]
     return events
+
+
+def _load_csv_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
 
 
 def _trade_log(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -159,6 +173,58 @@ def _candidate_session_stats(events: list[dict[str, Any]]) -> dict[str, Any]:
         "detected": detected,
         "rejected": rejected,
         "rejection_breakdown": rejection_breakdown,
+    }
+
+
+def _build_backtest(summary_file: Path, trades_file: Path) -> dict[str, Any]:
+    summary_rows = _load_csv_rows(summary_file)
+    trade_rows = _load_csv_rows(trades_file)
+    summary = summary_rows[0] if summary_rows else {}
+    trades: list[dict[str, Any]] = []
+    equity = 1.0
+    equity_curve: list[dict[str, Any]] = [{"ts": None, "equity": round(equity, 6), "source": "historical"}]
+
+    for row in trade_rows:
+        pnl_pct = _safe_float(row.get("pnl_pct"), 0.0)
+        equity *= 1.0 + pnl_pct
+        trade = {
+            "source": "historical",
+            "tag": "Historical",
+            "pair": row.get("pair"),
+            "entry": _safe_float(row.get("entry_price"), 0.0),
+            "exit": _safe_float(row.get("exit_price"), 0.0),
+            "entry_ts": _safe_int(row.get("entry_ts"), 0),
+            "exit_ts": _safe_int(row.get("exit_ts"), 0),
+            "pnl_pct": pnl_pct,
+            "reason": row.get("exit_reason"),
+            "bars_held": _safe_int(row.get("bars_held"), 0),
+            "signal_score": _safe_float(row.get("signal_score"), 0.0),
+        }
+        trades.append(trade)
+        equity_curve.append(
+            {
+                "ts": trade["exit_ts"],
+                "equity": round(equity, 6),
+                "pnl_pct": pnl_pct,
+                "pair": trade["pair"],
+                "reason": trade["reason"],
+                "source": "historical",
+            }
+        )
+
+    return {
+        "label": "Backtest history (120d)",
+        "construction": summary.get("construction"),
+        "trades_full": _safe_int(summary.get("trades_full"), 0),
+        "net_full": _safe_float(summary.get("net_full"), 0.0),
+        "win_full": _safe_float(summary.get("win_full"), 0.0),
+        "avg_full": _safe_float(summary.get("avg_full"), 0.0),
+        "max_dd": _safe_float(summary.get("max_dd"), 0.0),
+        "trades_recent": _safe_int(summary.get("trades_recent"), 0),
+        "net_recent": _safe_float(summary.get("net_recent"), 0.0),
+        "win_recent": _safe_float(summary.get("win_recent"), 0.0),
+        "equity_curve": equity_curve,
+        "trades": list(reversed(trades)),
     }
 
 
@@ -288,7 +354,13 @@ def _build_monitoring(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def create_app(log_dir: Path, state_file: Path, ui_dir: Path | None = None) -> FastAPI:
+def create_app(
+    log_dir: Path,
+    state_file: Path,
+    ui_dir: Path | None = None,
+    backtest_summary_file: Path | None = None,
+    backtest_trades_file: Path | None = None,
+) -> FastAPI:
     app = FastAPI(title="Kraken Agent Dashboard API")
     app.add_middleware(
         CORSMiddleware,
@@ -302,6 +374,10 @@ def create_app(log_dir: Path, state_file: Path, ui_dir: Path | None = None) -> F
 
     if ui_dir is None:
         ui_dir = DEFAULT_UI_DIR
+    if backtest_summary_file is None:
+        backtest_summary_file = DEFAULT_BACKTEST_SUMMARY_FILE
+    if backtest_trades_file is None:
+        backtest_trades_file = DEFAULT_BACKTEST_TRADES_FILE
 
     @app.get("/status")
     def status() -> dict[str, Any]:
@@ -334,6 +410,10 @@ def create_app(log_dir: Path, state_file: Path, ui_dir: Path | None = None) -> F
         events = _load_events(events_file)
         return _build_monitoring(events)
 
+    @app.get("/history")
+    def history() -> dict[str, Any]:
+        return _build_backtest(backtest_summary_file, backtest_trades_file)
+
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
         return RedirectResponse(url="/ui/")
@@ -349,6 +429,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     parser.add_argument("--ui-dir", default=str(DEFAULT_UI_DIR))
+    parser.add_argument("--backtest-summary-file", default=str(DEFAULT_BACKTEST_SUMMARY_FILE))
+    parser.add_argument("--backtest-trades-file", default=str(DEFAULT_BACKTEST_TRADES_FILE))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     return parser.parse_args()
@@ -358,5 +440,11 @@ if __name__ == "__main__":
     import uvicorn
 
     args = parse_args()
-    app = create_app(Path(args.log_dir), Path(args.state_file), Path(args.ui_dir))
+    app = create_app(
+        Path(args.log_dir),
+        Path(args.state_file),
+        Path(args.ui_dir),
+        Path(args.backtest_summary_file),
+        Path(args.backtest_trades_file),
+    )
     uvicorn.run(app, host=args.host, port=args.port)
