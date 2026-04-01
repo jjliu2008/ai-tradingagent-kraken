@@ -555,6 +555,27 @@ def build_ai_snapshot(
     }
 
 
+def build_signal_snapshot(signal: strat.Signal) -> dict:
+    return {
+        "pair": signal.pair,
+        "signal_type": signal.signal_type,
+        "score": round(signal.score, 4),
+        "component_tags": list(signal.component_tags),
+        "trend_strength": round(signal.trend_strength, 6),
+        "gate_trend_strength": round(signal.gate_trend_strength, 6),
+        "gate_momentum_medium": round(signal.gate_momentum_medium, 6),
+        "momentum_short": round(signal.momentum_short, 6),
+        "momentum_medium": round(signal.momentum_medium, 6),
+        "distance_from_vwap": round(signal.distance_from_vwap, 6),
+        "compression_ratio": round(signal.compression_ratio, 6),
+        "close_location": round(signal.close_location, 6),
+        "volume_ratio": round(signal.volume_ratio, 4),
+        "atr_pct": round(signal.atr_pct, 6),
+        "support_touch_pct": round(signal.support_touch_pct, 6),
+        "trigger_level": round(signal.trigger_level, 6),
+    }
+
+
 def ask_claude_signal(client: anthropic.Anthropic, snapshot: dict) -> AIDecision:
     response = client.messages.create(
         model=DEFAULT_MODEL,
@@ -750,6 +771,8 @@ def run(
             live_prices: dict[str, float] = {}
             best_quotes: dict[str, tuple[float, float]] = {}
             candidate_signals: list[tuple[str, strat.Signal]] = []
+            candidate_rejections: list[str] = []
+            placed_entry = False
             processed_any = False
 
             for pair in market_pairs:
@@ -1258,11 +1281,52 @@ def run(
 
                 signal = strategy.detect(df)
                 if signal is not None:
+                    pair_contexts[pair]["candidate"] = build_signal_snapshot(signal)
                     candidate_signals.append((pair, signal))
                     print(f"  Candidate: {signal.describe()}")
+                    append_event(
+                        event_log_path,
+                        "candidate_detected",
+                        cycle=cycle,
+                        pair=pair,
+                        signal=build_signal_snapshot(signal),
+                    )
+                else:
+                    pair_contexts[pair]["candidate"] = None
+
+            ranked = sorted(candidate_signals, key=lambda item: item[1].score, reverse=True)
+            top_candidate = build_signal_snapshot(ranked[0][1]) if ranked else None
+            append_event(
+                event_log_path,
+                "market_watch",
+                cycle=cycle,
+                monitored_pairs=market_pairs,
+                trade_pairs=trade_pairs,
+                context_pairs=context_pairs,
+                pair_snapshots=list(pair_contexts.values()),
+                candidate_count=len(candidate_signals),
+                top_candidate=top_candidate,
+            )
 
             if not processed_any:
                 print(f"[Cycle {cycle}] Waiting for next closed {interval_minutes}m bar...")
+                append_event(
+                    event_log_path,
+                    "no_trade_summary",
+                    cycle=cycle,
+                    reason="waiting_for_closed_bar",
+                    summary=f"waiting for next closed {interval_minutes}m bar",
+                    candidate_count=len(candidate_signals),
+                    rejected_count=0,
+                    rejection_reasons=[],
+                    open_positions=sum(
+                        1
+                        for strategy in strategies.values()
+                        if strategy.trade and strategy.trade.is_open
+                    ),
+                    pending_orders=len(pending_orders),
+                    top_candidate=top_candidate,
+                )
             else:
                 open_positions = sum(
                     1
@@ -1275,9 +1339,29 @@ def run(
                 )
                 if candidate_signals and open_positions < max_positions:
                     slots = max_positions - open_positions
-                    ranked = sorted(candidate_signals, key=lambda item: item[1].score, reverse=True)
+                    for pair, signal in ranked[slots:]:
+                        append_event(
+                            event_log_path,
+                            "candidate_rejected",
+                            cycle=cycle,
+                            pair=pair,
+                            reason="position_slot_unavailable",
+                            summary="higher-ranked candidate consumed available slot",
+                            signal=build_signal_snapshot(signal),
+                        )
+                        candidate_rejections.append("position_slot_unavailable")
                     for pair, signal in ranked[:slots]:
                         if pair in pending_orders:
+                            append_event(
+                                event_log_path,
+                                "candidate_rejected",
+                                cycle=cycle,
+                                pair=pair,
+                                reason="pending_order_exists",
+                                summary="existing pending order already active for pair",
+                                signal=build_signal_snapshot(signal),
+                            )
+                            candidate_rejections.append("pending_order_exists")
                             continue
                         pair_snapshot = pair_contexts[pair]
                         decision = default_decision()
@@ -1332,6 +1416,20 @@ def run(
                         )
 
                         if not decision.should_trade:
+                            append_event(
+                                event_log_path,
+                                "candidate_rejected",
+                                cycle=cycle,
+                                pair=pair,
+                                reason="ai_skip",
+                                summary="ai filter rejected candidate",
+                                signal=build_signal_snapshot(signal),
+                                action=decision.action,
+                                confidence=decision.confidence,
+                                exit_mode=decision.exit_mode,
+                                reason_tags=decision.reason_tags,
+                            )
+                            candidate_rejections.append("ai_skip")
                             continue
 
                         proposed_notional = notional_usd * decision.size_mult
@@ -1366,12 +1464,35 @@ def run(
                             f"{guardrail.summary}"
                         )
                         if not guardrail.allowed:
+                            append_event(
+                                event_log_path,
+                                "candidate_rejected",
+                                cycle=cycle,
+                                pair=pair,
+                                reason="risk_block",
+                                summary=guardrail.summary,
+                                signal=build_signal_snapshot(signal),
+                                approved_size_mult=guardrail.approved_size_mult,
+                                checks=[asdict(check) for check in guardrail.checks],
+                            )
+                            candidate_rejections.append("risk_block")
                             continue
 
                         effective_size_mult = min(decision.size_mult, guardrail.approved_size_mult)
                         size = compute_order_size(signal.price, notional_usd * effective_size_mult)
                         if size <= 0:
                             print(f"  SKIP {pair} | invalid order size")
+                            append_event(
+                                event_log_path,
+                                "candidate_rejected",
+                                cycle=cycle,
+                                pair=pair,
+                                reason="invalid_order_size",
+                                summary="computed order size was zero or negative",
+                                signal=build_signal_snapshot(signal),
+                                approved_size_mult=effective_size_mult,
+                            )
+                            candidate_rejections.append("invalid_order_size")
                             continue
 
                         best_bid, best_ask = best_quotes.get(pair, (0.0, 0.0))
@@ -1402,6 +1523,17 @@ def run(
                                 f"  VALIDATE ENTRY {pair} | size={size:.8f} | "
                                 f"limit={_format_price(entry_price)} | score={signal.score:.2f}"
                             )
+                            append_event(
+                                event_log_path,
+                                "candidate_rejected",
+                                cycle=cycle,
+                                pair=pair,
+                                reason="validation_only",
+                                summary="live validate-only mode prevented order placement",
+                                signal=build_signal_snapshot(signal),
+                                approved_size_mult=effective_size_mult,
+                            )
+                            candidate_rejections.append("validation_only")
                             continue
                         order_id = _extract_order_id(result)
                         pending_orders[pair] = PendingOrder(
@@ -1436,7 +1568,56 @@ def run(
                             component_tags=list(signal.component_tags),
                             gate_trend_strength=signal.gate_trend_strength,
                         )
+                        placed_entry = True
                         persist_state()
+                elif candidate_signals and open_positions >= max_positions:
+                    for pair, signal in ranked:
+                        append_event(
+                            event_log_path,
+                            "candidate_rejected",
+                            cycle=cycle,
+                            pair=pair,
+                            reason="max_positions_reached",
+                            summary="max open positions reached",
+                            signal=build_signal_snapshot(signal),
+                        )
+                        candidate_rejections.append("max_positions_reached")
+
+                no_trade_reason = None
+                no_trade_summary = None
+                if not placed_entry:
+                    if not candidate_signals:
+                        no_trade_reason = "no_signal"
+                        no_trade_summary = "no signal conditions met on monitored pairs"
+                    elif open_positions >= max_positions:
+                        no_trade_reason = "max_positions_reached"
+                        no_trade_summary = "capital already allocated to open positions"
+                    elif candidate_rejections:
+                        reason_counts: dict[str, int] = {}
+                        for reason in candidate_rejections:
+                            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                        no_trade_reason = max(reason_counts, key=reason_counts.get)
+                        no_trade_summary = f"{reason_counts[no_trade_reason]} candidate(s) rejected by {no_trade_reason}"
+                    elif pending_orders:
+                        no_trade_reason = "pending_orders_active"
+                        no_trade_summary = "waiting on active pending orders"
+                    else:
+                        no_trade_reason = "watching_market"
+                        no_trade_summary = "monitoring market conditions for next setup"
+
+                    append_event(
+                        event_log_path,
+                        "no_trade_summary",
+                        cycle=cycle,
+                        reason=no_trade_reason,
+                        summary=no_trade_summary,
+                        candidate_count=len(candidate_signals),
+                        rejected_count=len(candidate_rejections),
+                        rejection_reasons=candidate_rejections,
+                        open_positions=open_positions,
+                        pending_orders=len(pending_orders),
+                        top_candidate=top_candidate,
+                    )
 
             if cycle % 10 == 0 and trade_log:
                 pnls = [trade["pnl_pct"] for trade in trade_log]

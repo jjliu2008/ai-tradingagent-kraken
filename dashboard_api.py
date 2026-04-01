@@ -74,6 +74,13 @@ def _latest_event(events: list[dict[str, Any]], event_name: str) -> dict[str, An
     return None
 
 
+def _session_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for idx in range(len(events) - 1, -1, -1):
+        if events[idx].get("event") == "agent_started":
+            return events[idx:]
+    return events
+
+
 def _trade_log(state: dict[str, Any]) -> list[dict[str, Any]]:
     trades = state.get("trade_log")
     return trades if isinstance(trades, list) else []
@@ -133,6 +140,25 @@ def _open_positions(state: dict[str, Any]) -> list[dict[str, Any]]:
     return positions
 
 
+def _candidate_session_stats(events: list[dict[str, Any]]) -> dict[str, Any]:
+    detected = 0
+    rejected = 0
+    rejection_breakdown: dict[str, int] = {}
+    for event in events:
+        event_name = event.get("event")
+        if event_name == "candidate_detected":
+            detected += 1
+        elif event_name == "candidate_rejected":
+            rejected += 1
+            reason = str(event.get("reason") or "unknown")
+            rejection_breakdown[reason] = rejection_breakdown.get(reason, 0) + 1
+    return {
+        "detected": detected,
+        "rejected": rejected,
+        "rejection_breakdown": rejection_breakdown,
+    }
+
+
 def _build_status(state: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     trades = _trade_log(state)
     starting_balance = _starting_balance(events)
@@ -140,6 +166,10 @@ def _build_status(state: dict[str, Any], events: list[dict[str, Any]]) -> dict[s
     current_value = curve[-1]["equity"] if curve else starting_balance
     open_positions = _open_positions(state)
     agent_started = _latest_event(events, "agent_started") or {}
+    session_events = _session_events(events)
+    market_watch = _latest_event(session_events, "market_watch") or {}
+    no_trade = _latest_event(session_events, "no_trade_summary") or {}
+    session_stats = _candidate_session_stats(session_events)
     return {
         "generated_at": _utc_now_iso(),
         "mode": agent_started.get("mode"),
@@ -157,6 +187,12 @@ def _build_status(state: dict[str, Any], events: list[dict[str, Any]]) -> dict[s
         "pending_orders": list((state.get("pending_orders") or {}).values()),
         "uptime_started_at": agent_started.get("ts"),
         "equity_curve": curve,
+        "monitored_pairs": market_watch.get("monitored_pairs") or agent_started.get("trade_pairs") or [],
+        "latest_market_watch": market_watch,
+        "top_candidate": market_watch.get("top_candidate"),
+        "last_no_trade_reason": no_trade.get("reason"),
+        "last_no_trade_summary": no_trade.get("summary"),
+        "candidate_stats": session_stats,
     }
 
 
@@ -236,6 +272,17 @@ def _build_decisions(events: list[dict[str, Any]], limit: int) -> list[dict[str,
     return decisions
 
 
+def _build_monitoring(events: list[dict[str, Any]]) -> dict[str, Any]:
+    session_events = _session_events(events)
+    market_watch = _latest_event(session_events, "market_watch") or {}
+    no_trade = _latest_event(session_events, "no_trade_summary") or {}
+    return {
+        "market_watch": market_watch,
+        "no_trade": no_trade,
+        "candidate_stats": _candidate_session_stats(session_events),
+    }
+
+
 def create_app(log_dir: Path, state_file: Path) -> FastAPI:
     app = FastAPI(title="Kraken Agent Dashboard API")
     app.add_middleware(
@@ -273,6 +320,11 @@ def create_app(log_dir: Path, state_file: Path) -> FastAPI:
     @app.get("/events")
     def events(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
         return {"items": _load_events(events_file, limit)}
+
+    @app.get("/monitoring")
+    def monitoring() -> dict[str, Any]:
+        events = _load_events(events_file)
+        return _build_monitoring(events)
 
     return app
 
