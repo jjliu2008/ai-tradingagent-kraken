@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kraken Agent Monitor</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Kraken AI Trading Agent</p>
+          <h1>Live Monitor</h1>
+          <p class="hero-text">
+            Watch what the agent is tracking, why it is flat, and how risk guardrails are shaping
+            each decision in real time.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <div class="meta-chip">
+            <span class="dot"></span>
+            <span id="agent-mode">Connecting</span>
+          </div>
+          <div class="meta-pair" id="agent-construction">Loading strategy</div>
+          <div class="meta-stamp" id="last-updated">Waiting for first refresh</div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel hero-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Portfolio</p>
+              <h2>Account Status</h2>
+            </div>
+            <div class="inline-kv">
+              <span>Cycle</span>
+              <strong id="cycle">-</strong>
+            </div>
+          </div>
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span class="metric-label">Current Value</span>
+              <strong class="metric-value" id="current-value">$0.00</strong>
+              <span class="metric-foot" id="starting-balance">Start $0.00</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Realized PnL</span>
+              <strong class="metric-value" id="realized-pnl">0.00%</strong>
+              <span class="metric-foot" id="open-position-count">0 open positions</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Monitoring</span>
+              <strong class="metric-value" id="monitored-pairs">-</strong>
+              <span class="metric-foot" id="interval-label">15m cadence</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Candidates Rejected</span>
+              <strong class="metric-value" id="rejected-count">0</strong>
+              <span class="metric-foot" id="detected-count">0 evaluated this session</span>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel spotlight">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Decision State</p>
+              <h2>Why No Trade</h2>
+            </div>
+          </div>
+          <div class="spotlight-grid">
+            <div class="spotlight-copy">
+              <div class="reason-pill" id="no-trade-reason">Waiting</div>
+              <p class="spotlight-text" id="no-trade-summary">
+                The agent is warming up and has not produced a cycle summary yet.
+              </p>
+            </div>
+            <div class="top-candidate" id="top-candidate-card">
+              <div class="candidate-label">Top Candidate</div>
+              <div class="candidate-empty">No active candidate</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel chart-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Performance</p>
+              <h2>Equity Curve</h2>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <svg id="equity-chart" viewBox="0 0 640 240" preserveAspectRatio="none" aria-hidden="true">
+              <rect x="0" y="0" width="640" height="240" rx="18" class="chart-bg"></rect>
+              <g id="chart-grid"></g>
+              <path id="chart-area" class="chart-area"></path>
+              <path id="chart-line" class="chart-line"></path>
+            </svg>
+            <div class="chart-empty" id="chart-empty">No closed trades yet. Equity line will populate after the first exit.</div>
+          </div>
+        </section>
+
+        <section class="panel risk-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Guardrails</p>
+              <h2>Risk Utilization</h2>
+            </div>
+          </div>
+          <div class="risk-bars" id="risk-bars"></div>
+        </section>
+
+        <section class="panel market-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Market Watch</p>
+              <h2>Conditions Being Watched</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Pair</th>
+                  <th>Price</th>
+                  <th>Trend</th>
+                  <th>Volume</th>
+                  <th>VWAP Dist</th>
+                  <th>OBI</th>
+                  <th>Spread</th>
+                  <th>Candidate</th>
+                </tr>
+              </thead>
+              <tbody id="market-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel decisions-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">AI + Rules</p>
+              <h2>Recent Decisions</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Pair</th>
+                  <th>Action</th>
+                  <th>Confidence</th>
+                  <th>Signal</th>
+                  <th>Guardrails</th>
+                  <th>Tags</th>
+                </tr>
+              </thead>
+              <tbody id="decisions-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel trades-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Execution</p>
+              <h2>Trade Log</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Pair</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>PnL</th>
+                  <th>Reason</th>
+                  <th>Exit Review</th>
+                </tr>
+              </thead>
+              <tbody id="trades-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel tape-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">Event Tape</p>
+              <h2>Latest Events</h2>
+            </div>
+          </div>
+          <div class="event-list" id="events-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+  </html>

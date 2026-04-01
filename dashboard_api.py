@@ -10,10 +10,13 @@ from typing import Any
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 
 DEFAULT_LOG_DIR = Path(os.environ.get("DASHBOARD_LOG_DIR", "runtime/paper"))
 DEFAULT_STATE_FILE = Path(os.environ.get("DASHBOARD_STATE_FILE", "runtime/paper/state.json"))
+DEFAULT_UI_DIR = Path(os.environ.get("DASHBOARD_UI_DIR", "dashboard"))
 
 
 def _utc_now_iso() -> str:
@@ -262,6 +265,8 @@ def _build_decisions(events: list[dict[str, Any]], limit: int) -> list[dict[str,
                 "exit_mode": event.get("exit_mode"),
                 "reason_tags": event.get("reason_tags") or [],
                 "signal_score": event.get("signal_score"),
+                "signal_type": event.get("signal_type"),
+                "component_tags": event.get("component_tags") or [],
                 "guardrail_allowed": risk_event.get("allowed") if risk_event else None,
                 "guardrail_summary": risk_event.get("summary") if risk_event else None,
                 "guardrail_size_mult": risk_event.get("approved_size_mult") if risk_event else None,
@@ -283,7 +288,7 @@ def _build_monitoring(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def create_app(log_dir: Path, state_file: Path) -> FastAPI:
+def create_app(log_dir: Path, state_file: Path, ui_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="Kraken Agent Dashboard API")
     app.add_middleware(
         CORSMiddleware,
@@ -294,6 +299,9 @@ def create_app(log_dir: Path, state_file: Path) -> FastAPI:
     )
 
     events_file = log_dir / "events.jsonl"
+
+    if ui_dir is None:
+        ui_dir = DEFAULT_UI_DIR
 
     @app.get("/status")
     def status() -> dict[str, Any]:
@@ -326,6 +334,13 @@ def create_app(log_dir: Path, state_file: Path) -> FastAPI:
         events = _load_events(events_file)
         return _build_monitoring(events)
 
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
+
+    if ui_dir.exists():
+        app.mount("/ui", StaticFiles(directory=ui_dir, html=True), name="dashboard-ui")
+
     return app
 
 
@@ -333,6 +348,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the lightweight dashboard API")
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
+    parser.add_argument("--ui-dir", default=str(DEFAULT_UI_DIR))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     return parser.parse_args()
@@ -342,5 +358,5 @@ if __name__ == "__main__":
     import uvicorn
 
     args = parse_args()
-    app = create_app(Path(args.log_dir), Path(args.state_file))
+    app = create_app(Path(args.log_dir), Path(args.state_file), Path(args.ui_dir))
     uvicorn.run(app, host=args.host, port=args.port)
