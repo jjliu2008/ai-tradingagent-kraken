@@ -46,11 +46,18 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 UNIVERSE = [
-    # Both pairs require 2/4 consensus signals (backtest-validated)
+    # Core pairs (backtest-validated on 60-min bars)
     # GIGAUSD: +20.7% net / 120d | 69% win | 5.07 PF | Sharpe 23
     # ZECUSD:  +4.8%  net / 60d  | 50% win | 3.76 PF
     "GIGAUSD",
     "ZECUSD",
+    # Expanded universe — liquid pairs for broader opportunity set
+    "SOLUSD",
+    "ETHUSD",
+    "XBTUSD",
+    "LINKUSD",
+    "AVAXUSD",
+    "OPUSD",
 ]
 
 # Per-pair minimum vote threshold (backtest-validated)
@@ -193,8 +200,29 @@ def _sig_sweet_spot(df: pd.DataFrame) -> bool:
     )
 
 
-_SIGNALS = [_sig_macd_accel, _sig_bb_squeeze, _sig_atr_compress, _sig_sweet_spot]
-_SIG_NAMES = ["macd_accel", "bb_squeeze", "atr_compress", "sweet_spot"]
+def _sig_oversold_bounce(df: pd.DataFrame) -> bool:
+    """Mean-reversion bounce: prior weakness + reversal bar + volume surge.
+    Fires in downtrend conditions where breakout signals cannot.
+    """
+    if len(df) < 30: return False
+    last = df.iloc[-1]
+    # Prior 4 bars were all weak (negative momentum)
+    prior_mom = [float(df.iloc[-i]["momentum_medium"]) for i in range(2, 6)]
+    prior_weak = sum(1 for m in prior_mom if m < -0.003) >= 3
+    # Current bar is recovering: MACD hist turning up
+    macd_turning = float(last["macd_hist"]) > float(df.iloc[-2]["macd_hist"])
+    # Volume surge — capitulation/reversal signature
+    vol_surge = float(last["volume_ratio"]) >= 1.4
+    # Close in upper 50% of bar (buyers winning)
+    closing_up = float(last["close_location"]) > 0.50
+    # Not too far below VWAP (avoid falling knives)
+    vwap_dist = float(last["distance_from_vwap"])
+    near_vwap = -0.06 <= vwap_dist <= 0.005
+    return bool(prior_weak and macd_turning and vol_surge and closing_up and near_vwap)
+
+
+_SIGNALS = [_sig_macd_accel, _sig_bb_squeeze, _sig_atr_compress, _sig_sweet_spot, _sig_oversold_bounce]
+_SIG_NAMES = ["macd_accel", "bb_squeeze", "atr_compress", "sweet_spot", "oversold_bounce"]
 
 
 def score_signal(df: pd.DataFrame) -> tuple[int, list[str]]:
@@ -435,7 +463,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-pos",     type=int,   default=MAX_POSITIONS)
     p.add_argument("--notional",    type=float, default=BASE_NOTIONAL)
     p.add_argument("--poll",        type=int,   default=60,   help="seconds between cycles")
-    p.add_argument("--interval",    type=int,   default=60,   help="OHLC interval in minutes")
+    p.add_argument("--interval",    type=int,   default=15,   help="OHLC interval in minutes")
     p.add_argument("--min-score",   type=int,   default=MIN_SIGNAL_SCORE)
     p.add_argument("--cycles",      type=int,   default=0,    help="0 = run forever")
     p.add_argument("--use-claude",  action="store_true")
