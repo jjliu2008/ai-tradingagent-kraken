@@ -33,30 +33,31 @@ SLIPPAGE    = 0.0005
 ROUND_TRIP  = (COMMISSION + SLIPPAGE) * 2
 MIN_VOTES   = 2
 
-# Broad Kraken USD universe — meme coins, mid-caps, alts
-# Focus: small/mid-cap pairs where compression+breakout patterns hold
-CANDIDATES = [
-    # Proven
-    "GIGAUSD", "ZECUSD",
-    # Meme / micro-cap (most likely to be GIGA-like)
-    "PEPEUSD", "WIFUSD", "BONKUSD", "FLOKUSD", "MEMEUSD",
-    "POPCATUSD", "MOGUSD", "TURBOUSD", "BRETTOUSD",
-    "GOATUSD", "MOONUSD", "ACTOUSD", "PENGUUSD",
-    # AI / narrative
-    "FETUSD", "AGIXUSD", "RNDRUSD", "VIRTUALUSD",
-    "NEARUSD", "TAOUSD",
-    # DeFi / mid-cap
-    "INJUSD", "JUPUSD", "TIAUSD", "DYMUSD", "STXUSD",
-    "ENAUSD", "ETHFIUSD", "MKRUSD", "AAVEUSD",
-    # Layer-1s / Layer-2s
-    "SEIUSD", "APTUSD", "SUIUSD", "ARBUSD", "OPUSD",
-    "STRKUSD", "MANTUSD", "ZKUSD",
-    # Others in cache
-    "ADAUSD", "XRPUSD", "LINKUSD", "DOTUSD", "ATOMUSD",
-    "AVAXUSD", "MATICUSD", "UNIUSD", "LTCUSD", "XBTUSD",
-    "ETHUSD", "SOLUSD", "XDGUSD", "TRXUSD", "NIGHTUSD",
-    "HYPEUSD", "COQUSD",
-]
+def get_all_usd_pairs() -> list[str]:
+    """Fetch every live USD pair from Kraken's AssetPairs API."""
+    try:
+        raw = kc.fetch_asset_pairs()
+        pairs = []
+        for name, info in raw.items():
+            # Only spot USD pairs, no leveraged/dark-pool variants
+            if (info.get("quote") in ("ZUSD", "USD")
+                    and info.get("status") == "online"
+                    and ".d" not in name):
+                # Use the altname (clean name like XBTUSD) if available
+                alt = info.get("altname", name)
+                pairs.append(alt)
+        return sorted(set(pairs))
+    except Exception as e:
+        print(f"  Warning: could not fetch pair list ({e}), using built-in list")
+        return [
+            "GIGAUSD","ZECUSD","PEPEUSD","WIFUSD","BONKUSD","FLOKUSD","MEMEUSD",
+            "POPCATUSD","MOGUSD","TURBOUSD","GOATUSD","MOONUSD","PENGUUSD",
+            "FETUSD","VIRTUALUSD","NEARUSD","TAOUSD","INJUSD","JUPUSD","TIAUSD",
+            "DYMUSD","STXUSD","ENAUSD","ETHFIUSD","AAVEUSD","SEIUSD","APTUSD",
+            "SUIUSD","ARBUSD","OPUSD","STRKUSD","ZKUSD","ADAUSD","XRPUSD",
+            "LINKUSD","DOTUSD","ATOMUSD","AVAXUSD","UNIUSD","LTCUSD","XBTUSD",
+            "ETHUSD","SOLUSD","XDGUSD","TRXUSD","NIGHTUSD","HYPEUSD","COQUSD",
+        ]
 
 
 @dataclass
@@ -198,23 +199,33 @@ def main():
     parser.add_argument("--notional",   type=float, default=150.0)
     parser.add_argument("--days",       type=int,   default=120,
                         help="Days of history to fetch (default 120)")
-    parser.add_argument("--min-trades", type=int,   default=3,
-                        help="Min trades to include in ranking")
-    parser.add_argument("--top",        type=int,   default=15,
+    parser.add_argument("--min-trades", type=int,   default=1,
+                        help="Min trades to include in ranking (default 1 — show all profitable)")
+    parser.add_argument("--top",        type=int,   default=30,
                         help="Show top N pairs")
+    parser.add_argument("--pairs",      default="",
+                        help="Comma-separated pairs to test (default: all Kraken USD pairs)")
     args = parser.parse_args()
+
+    # Build candidate list: CLI override → dynamic API fetch → built-in fallback
+    if args.pairs:
+        candidates = [p.strip().upper() for p in args.pairs.split(",")]
+    else:
+        print("  Fetching full Kraken USD pair list...", end=" ", flush=True)
+        candidates = get_all_usd_pairs()
+        print(f"{len(candidates)} pairs found")
 
     bars_label = f"{args.interval}m"
     print(f"\n{'='*70}")
     print(f"  PAIR ALPHA SCANNER | interval={bars_label} | {args.days}d history | notional=${args.notional}")
     print(f"  Signals: {', '.join(SIGNAL_NAMES)}")
-    print(f"  Min votes: {MIN_VOTES}/{len(SIGNALS)} | Testing {len(CANDIDATES)} pairs...")
-    print(f"  NOTE: fetching {args.days}d data takes ~{len(CANDIDATES)*2}s — please wait")
+    print(f"  Min votes: {MIN_VOTES}/{len(SIGNALS)} | Testing {len(candidates)} pairs...")
+    print(f"  ETA: ~{len(candidates)//3} min — testing every live USD pair on Kraken")
     print(f"{'='*70}\n")
 
     results = []
-    for i, pair in enumerate(CANDIDATES):
-        print(f"  [{i+1:2d}/{len(CANDIDATES)}] {pair:<14} ...", end=" ", flush=True)
+    for i, pair in enumerate(candidates):
+        print(f"  [{i+1:3d}/{len(candidates)}] {pair:<14} ...", end=" ", flush=True)
         t0 = time.time()
         r  = backtest_live(pair, args.interval, args.notional, days=args.days)
         elapsed = time.time() - t0
@@ -239,27 +250,51 @@ def main():
         time.sleep(0.25)   # gentle on Kraken API
 
     # ── Ranked summary ────────────────────────────────────────────────────────
-    qualified = [r for r in results if r.n_trades >= args.min_trades and r.pnl > 0]
-    qualified.sort(key=lambda r: r.sharpe, reverse=True)
+    import math
+    all_profitable = [r for r in results if r.pnl > 0]
+    qualified      = [r for r in all_profitable if r.n_trades >= args.min_trades]
 
-    print(f"\n{'='*70}")
-    print(f"  TOP PAIRS (profitable, >={args.min_trades} trades) — ranked by Sharpe")
-    print(f"{'='*70}")
-    print("%-14s %6s %8s %5s %6s %8s %8s" % (
-        "Pair", "Trades", "Net P&L", "Win%", "PF", "Sharpe", "Freq/wk"))
-    print("-" * 60)
+    def score(r):
+        return r.win_rate * math.log(r.pf + 1) * math.log(r.n_trades + 1)
+
+    qualified.sort(key=score, reverse=True)
+
+    print(f"\n{'='*74}")
+    print(f"  ALL PROFITABLE PAIRS (>={args.min_trades} trade) — ranked by quality x frequency")
+    print(f"{'='*74}")
+    print("%-14s %6s %8s %5s %6s %8s %7s  %s" % (
+        "Pair", "Trades", "Net P&L", "Win%", "PF", "Sharpe", "Freq/wk", "Tier"))
+    print("-" * 74)
     for r in qualified[:args.top]:
-        star = " ⭐" if r.pnl > 5 and r.win_rate >= 0.50 and r.pf >= 2.0 else ""
-        print("%-14s %6d %+8.2f %4.0f%% %6.2f %8.1f %8.1f%s" % (
+        if r.win_rate >= 0.60 and r.pf >= 2.0 and r.n_trades >= 3:
+            tier = "⭐ A"
+        elif r.win_rate >= 0.50 and r.pf >= 1.5:
+            tier = "✓  B"
+        elif r.win_rate >= 0.33:
+            tier = "   C"
+        else:
+            tier = "   D"
+        print("%-14s %6d %+8.2f %4.0f%% %6.2f %8.1f %7.1f  %s" % (
             r.pair, r.n_trades, r.pnl, r.win_rate * 100,
-            r.pf, r.sharpe, r.freq_week, star))
+            r.pf, r.sharpe, r.freq_week, tier))
 
     if not qualified:
-        print("  No profitable pairs found with >=%d trades." % args.min_trades)
+        print("  No profitable pairs found.")
 
-    print(f"\n  Total tested: {len(results)} pairs | "
-          f"Profitable: {len([r for r in results if r.pnl > 0])} | "
-          f"Qualified: {len(qualified)}")
+    a_pairs = [r.pair for r in qualified if r.win_rate >= 0.60 and r.pf >= 2.0 and r.n_trades >= 3]
+    b_pairs = [r.pair for r in qualified if r.win_rate >= 0.50 and r.pf >= 1.5 and r.pair not in a_pairs]
+    c_pairs = [r.pair for r in qualified if r.win_rate >= 0.33 and r.pair not in a_pairs + b_pairs]
+
+    print(f"\n  Tested: {len(results)} | Profitable: {len(all_profitable)} | Qualified: {len(qualified)}")
+    if a_pairs:
+        print(f"\n  ⭐ TIER A — add to universe now:")
+        print(f"     {','.join(a_pairs)}")
+    if b_pairs:
+        print(f"  ✓  TIER B — worth monitoring:")
+        print(f"     {','.join(b_pairs[:15])}")
+    if c_pairs:
+        print(f"     TIER C — marginal, use cautiously:")
+        print(f"     {','.join(c_pairs[:10])}")
 
 
 if __name__ == "__main__":
