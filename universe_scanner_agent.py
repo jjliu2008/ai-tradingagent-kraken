@@ -46,27 +46,41 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 UNIVERSE = [
-    # Core pairs (backtest-validated on 60-min bars)
+    # ── Tier A: backtest-validated long-term (120d cached data)
     # GIGAUSD: +20.7% net / 120d | 69% win | 5.07 PF | Sharpe 23
     # ZECUSD:  +4.8%  net / 60d  | 50% win | 3.76 PF
     "GIGAUSD",
     "ZECUSD",
-    # Expanded universe — liquid pairs for broader opportunity set
-    "SOLUSD",
-    "ETHUSD",
-    "XBTUSD",
-    "LINKUSD",
-    "AVAXUSD",
-    "OPUSD",
+    # ── Tier A: live-scanner confirmed (332-pair scan, 30d live data)
+    # REDUSD:  3+ trades | 60%+ win | PF≥2  (scanner Tier A)
+    # SUIUSD:  3 trades  | 67% win  | PF=2.12 | Sharpe=15
+    "REDUSD",
+    "SUIUSD",
+    # ── Tier B: 2 trades, 100% win rate, ranked by net P&L
+    # KERNELUSD: +$16.78 | CHZUSD: +$15.54 | WIFUSD: +$9.30
+    # ZAMAUSD: +$4.73   | CCUSD:  +$4.83   | HYPEUSD: +$2.57
+    "KERNELUSD",
+    "CHZUSD",
+    "WIFUSD",
+    "ZAMAUSD",
+    "CCUSD",
+    "HYPEUSD",
 ]
 
-# Per-pair minimum vote threshold (backtest-validated)
-# votes=1 on GIGAUSD → -16% net (signals too noisy without consensus)
-# votes=1 on ZECUSD  → +15.8% net but Sharpe drops from 20 → 4.86 combined
-# Keeping both at 2 preserves Sharpe 20+ for the risk-adjusted prize
+# Per-pair minimum vote threshold
+# Tier A pairs (more historical evidence) stay at 2/5
+# Tier B pairs (2-trade sample) also 2/5 — consensus filter is critical
 PAIR_MIN_VOTES: dict[str, int] = {
-    "GIGAUSD": 2,
-    "ZECUSD":  2,
+    "GIGAUSD":   2,
+    "ZECUSD":    2,
+    "REDUSD":    2,
+    "SUIUSD":    2,
+    "KERNELUSD": 2,
+    "CHZUSD":    2,
+    "WIFUSD":    2,
+    "ZAMAUSD":   2,
+    "CCUSD":     2,
+    "HYPEUSD":   2,
 }
 DEFAULT_MIN_VOTES = 2   # fallback for any pair not in PAIR_MIN_VOTES
 
@@ -74,8 +88,8 @@ DEFAULT_MIN_VOTES = 2   # fallback for any pair not in PAIR_MIN_VOTES
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_POSITIONS    = 3        # concurrent open positions
-BASE_NOTIONAL    = 150.0    # USD per position
+MAX_POSITIONS    = 5        # concurrent open positions (more pairs = more concurrency)
+BASE_NOTIONAL    = 100.0    # USD per position (reduced from 150 to manage risk across larger universe)
 STOP_PCT         = 0.015    # 1.5% stop loss
 TARGET_PCT       = 0.040    # 4.0% take profit
 MAX_HOLD_BARS    = 10       # exit after N bars if no TP/SL
