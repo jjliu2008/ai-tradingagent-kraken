@@ -72,13 +72,38 @@ class PairResult:
     n_bars:     int
 
 
-def backtest_live(pair: str, interval: int, notional: float) -> PairResult | None:
-    """Fetch live OHLC and run backtest. Returns None if pair unavailable."""
+def fetch_ohlc_paginated(pair: str, interval: int, days: int = 120) -> pd.DataFrame | None:
+    """Fetch up to `days` of OHLC by paginating Kraken (720 bars per call)."""
+    import time as _time
+    bars_needed = days * 24 * (60 // interval)
+    calls_needed = max(1, -(-bars_needed // 720))   # ceiling division
+
+    now_ts = int(_time.time())
+    # Walk backwards: oldest chunk first
+    chunks = []
+    for i in range(calls_needed - 1, -1, -1):
+        since_ts = now_ts - (i + 1) * 720 * interval * 60
+        try:
+            raw = kc.fetch_ohlc(pair, interval=interval, since=since_ts)
+            chunk = strat.parse_ohlc(raw)
+            if chunk is not None and len(chunk) > 0:
+                chunks.append(chunk)
+        except Exception:
+            pass
+        _time.sleep(0.15)   # gentle on Kraken rate limits
+
+    if not chunks:
+        return None
+    df = pd.concat(chunks).drop_duplicates(subset=["ts"]).sort_values("ts").reset_index(drop=True)
+    df = df.iloc[:-1]   # drop incomplete current candle
+    return df if len(df) >= 100 else None
+
+
+def backtest_live(pair: str, interval: int, notional: float, days: int = 120) -> PairResult | None:
+    """Fetch paginated OHLC and run backtest. Returns None if pair unavailable."""
     try:
-        raw = kc.fetch_ohlc(pair, interval=interval)
-        df  = strat.parse_ohlc(raw)
-        df  = df.iloc[:-1]   # drop incomplete current candle
-        if len(df) < 100:
+        df = fetch_ohlc_paginated(pair, interval=interval, days=days)
+        if df is None:
             return None
     except Exception:
         return None
@@ -131,7 +156,8 @@ def backtest_live(pair: str, interval: int, notional: float) -> PairResult | Non
         if i <= cooldown_until:
             continue
 
-        window = dff.iloc[:i + 1]
+        # trailing window (avoids O(n²) full slice)
+        window = dff.iloc[max(0, i - 59):i + 1]
         fires  = [n for fn, n in zip(SIGNALS, SIGNAL_NAMES) if fn(window)]
         if len(fires) >= MIN_VOTES:
             in_trade    = True
@@ -170,6 +196,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval",   type=int,   default=60)
     parser.add_argument("--notional",   type=float, default=150.0)
+    parser.add_argument("--days",       type=int,   default=120,
+                        help="Days of history to fetch (default 120)")
     parser.add_argument("--min-trades", type=int,   default=3,
                         help="Min trades to include in ranking")
     parser.add_argument("--top",        type=int,   default=15,
@@ -178,16 +206,17 @@ def main():
 
     bars_label = f"{args.interval}m"
     print(f"\n{'='*70}")
-    print(f"  PAIR ALPHA SCANNER | interval={bars_label} | notional=${args.notional}")
+    print(f"  PAIR ALPHA SCANNER | interval={bars_label} | {args.days}d history | notional=${args.notional}")
     print(f"  Signals: {', '.join(SIGNAL_NAMES)}")
     print(f"  Min votes: {MIN_VOTES}/{len(SIGNALS)} | Testing {len(CANDIDATES)} pairs...")
+    print(f"  NOTE: fetching {args.days}d data takes ~{len(CANDIDATES)*2}s — please wait")
     print(f"{'='*70}\n")
 
     results = []
     for i, pair in enumerate(CANDIDATES):
         print(f"  [{i+1:2d}/{len(CANDIDATES)}] {pair:<14} ...", end=" ", flush=True)
         t0 = time.time()
-        r  = backtest_live(pair, args.interval, args.notional)
+        r  = backtest_live(pair, args.interval, args.notional, days=args.days)
         elapsed = time.time() - t0
 
         if r is None:
