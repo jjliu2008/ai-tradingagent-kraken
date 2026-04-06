@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Universe Scanner — Live Dashboard</title>
+<meta http-equiv="refresh" content="30">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --muted: #8b949e;
+          --text: #e6edf3; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  header h1 { color: var(--accent); font-size: 20px; }
+  .status-badge { background: var(--green); color: #000; font-size: 11px; font-weight: 700;
+                  padding: 3px 8px; border-radius: 12px; }
+  .status-badge.offline { background: var(--red); }
+  .last-update { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; }
+  .kpi .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .pos { color: var(--green); } .neg { color: var(--red); } .neu { color: var(--accent); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media(max-width:700px){ .row { grid-template-columns: 1fr; } }
+  .chart-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px; }
+  .chart-title { font-size: 12px; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .5px;
+       padding: 6px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child { text-align: left; }
+  td { padding: 7px 12px; text-align: right; border-bottom: 1px solid #21262d; }
+  td:first-child { text-align: left; font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #1c2128; }
+  .pill { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px;
+          background: #21262d; color: var(--muted); }
+  .pill.open { background: rgba(63,185,80,0.15); color: var(--green); }
+  #no-data { text-align: center; padding: 60px; color: var(--muted); }
+  #no-data h2 { font-size: 16px; margin-bottom: 8px; }
+  #no-data code { background: #21262d; padding: 8px 14px; border-radius: 6px; display: block;
+                  margin: 12px auto; max-width: 600px; color: #79c0ff; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>🤖 Universe Scanner — Live Dashboard</h1>
+    <div class="last-update" id="last-update">Loading…</div>
+  </div>
+  <span class="status-badge" id="status">LOADING</span>
+</header>
+
+<div id="no-data" style="display:none">
+  <h2>No live data yet</h2>
+  <p>Start the trading agent to see the real-time equity curve:</p>
+  <code>python universe_scanner_agent.py --mode paper --reset-paper --poll 60</code>
+  <p style="margin-top:16px;font-size:13px">This dashboard auto-refreshes every 30 seconds.</p>
+</div>
+
+<div id="main-content" style="display:none">
+
+<div class="kpi-grid">
+  <div class="kpi"><div class="label">Total P&amp;L</div><div class="value" id="kpi-pnl">$0.00</div></div>
+  <div class="kpi"><div class="label">Realized</div><div class="value" id="kpi-realized">$0.00</div></div>
+  <div class="kpi"><div class="label">Unrealized</div><div class="value" id="kpi-unrealized">$0.00</div></div>
+  <div class="kpi"><div class="label">Win Rate</div><div class="value neu" id="kpi-wr">—</div></div>
+  <div class="kpi"><div class="label">Trades Done</div><div class="value neu" id="kpi-trades">0</div></div>
+  <div class="kpi"><div class="label">Open Positions</div><div class="value neu" id="kpi-open">0</div></div>
+</div>
+
+<div class="row">
+  <div class="chart-wrap">
+    <div class="chart-title">Equity Curve (mark-to-market)</div>
+    <canvas id="equity-chart" height="180"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <div class="chart-title">Open Positions</div>
+    <div id="positions-panel" style="padding-top:8px">
+      <p style="color:var(--muted);font-size:13px;text-align:center;padding:40px 0">No open positions</p>
+    </div>
+  </div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-title">Trade History</div>
+  <table>
+    <thead>
+      <tr><th>Pair</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Reason</th><th>Signals</th></tr>
+    </thead>
+    <tbody id="trade-table"></tbody>
+  </table>
+</div>
+
+</div><!-- #main-content -->
+
+<script>
+// ── Load pnl_curve.jsonl via fetch (works with python -m http.server) ────────
+const DATA_PATH = 'runtime/universe/pnl_curve.jsonl';
+
+let equityChart = null;
+
+function formatUSD(v) {
+  const s = Math.abs(v).toFixed(2);
+  return (v >= 0 ? '+$' : '-$') + s;
+}
+
+function colorClass(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'; }
+
+async function loadData() {
+  try {
+    const resp = await fetch(DATA_PATH + '?t=' + Date.now());
+    if (!resp.ok) throw new Error('not found');
+    const text = await resp.text();
+    const lines = text.trim().split('\n').filter(Boolean);
+    if (!lines.length) throw new Error('empty');
+
+    const rows = lines.map(l => JSON.parse(l));
+    document.getElementById('no-data').style.display = 'none';
+    document.getElementById('main-content').style.display = '';
+    document.getElementById('status').textContent = 'LIVE';
+    document.getElementById('status').classList.remove('offline');
+
+    const last = rows[rows.length - 1];
+    document.getElementById('last-update').textContent =
+      'Last update: ' + new Date(last.ts * 1000).toLocaleTimeString();
+
+    // KPIs
+    const totalPnl  = last.total_pnl_usd ?? last.equity ?? 0;
+    const realized  = last.realized_usd ?? 0;
+    const unrealized = last.unrealized_usd ?? 0;
+    const nTrades   = last.n_trades ?? 0;
+    const nWins     = last.n_wins ?? 0;
+    const nOpen     = last.n_open ?? 0;
+    const wr = nTrades > 0 ? (nWins / nTrades * 100).toFixed(0) + '%' : '—';
+
+    const pnlEl = document.getElementById('kpi-pnl');
+    pnlEl.textContent = formatUSD(totalPnl);
+    pnlEl.className = 'value ' + colorClass(totalPnl);
+    const realEl = document.getElementById('kpi-realized');
+    realEl.textContent = formatUSD(realized);
+    realEl.className = 'value ' + colorClass(realized);
+    const unrealEl = document.getElementById('kpi-unrealized');
+    unrealEl.textContent = formatUSD(unrealized);
+    unrealEl.className = 'value ' + colorClass(unrealized);
+    document.getElementById('kpi-wr').textContent = wr;
+    document.getElementById('kpi-trades').textContent = nTrades;
+    document.getElementById('kpi-open').textContent = nOpen;
+
+    // Equity chart
+    const step = Math.max(1, Math.floor(rows.length / 500));
+    const sampled = rows.filter((_, i) => i % step === 0);
+    const labels = sampled.map(r => new Date(r.ts * 1000).toLocaleDateString('en-US', {month:'short', day:'numeric'}));
+    const data   = sampled.map(r => +(r.total_pnl_usd ?? r.equity ?? 0).toFixed(4));
+
+    if (!equityChart) {
+      equityChart = new Chart(document.getElementById('equity-chart'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Equity ($)',
+            data,
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88,166,255,0.06)',
+            borderWidth: 1.5,
+            fill: true,
+            pointRadius: 0,
+            tension: 0.15,
+          }]
+        },
+        options: {
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => '$' + ctx.raw.toFixed(2) } },
+          },
+          scales: {
+            x: { ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } },
+                 grid: { color: '#21262d' } },
+            y: { ticks: { color: '#8b949e', callback: v => '$' + v.toFixed(0) },
+                 grid: { color: '#21262d' } },
+          },
+        }
+      });
+    } else {
+      equityChart.data.labels = labels;
+      equityChart.data.datasets[0].data = data;
+      equityChart.update('none');
+    }
+
+    // Positions panel
+    const positions = (last.open_positions ?? []);
+    const posPanel = document.getElementById('positions-panel');
+    if (positions.length === 0) {
+      posPanel.innerHTML = '<p style="color:var(--muted);font-size:13px;text-align:center;padding:40px 0">No open positions</p>';
+    } else {
+      posPanel.innerHTML = positions.map(p => {
+        const upnl = p.unrealized_pnl_pct ?? 0;
+        const cls  = upnl >= 0 ? 'pos' : 'neg';
+        return `
+          <div style="padding:10px;border-bottom:1px solid #21262d;display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span style="font-weight:600">${p.pair}</span>
+              <span class="pill open" style="margin-left:6px">OPEN</span>
+              <div style="font-size:11px;color:var(--muted);margin-top:3px">${(p.conditions??[]).join(', ')}</div>
+            </div>
+            <div style="text-align:right">
+              <div class="${cls}" style="font-size:15px;font-weight:600">${(upnl*100>=0?'+':'')}${(upnl*100).toFixed(2)}%</div>
+              <div style="font-size:11px;color:var(--muted)">entry ${(p.entry_price??0).toFixed(4)}</div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // Trade table
+    const trades = (last.recent_trades ?? []).slice(-20).reverse();
+    const tbody   = document.getElementById('trade-table');
+    tbody.innerHTML = trades.map(t => {
+      const cls = (t.pnl_net ?? 0) >= 0 ? 'pos' : 'neg';
+      return `<tr>
+        <td>${t.pair ?? '—'}</td>
+        <td>${(t.entry_price ?? 0).toFixed(4)}</td>
+        <td>${(t.exit_price ?? 0).toFixed(4)}</td>
+        <td class="${cls}">${formatUSD(t.pnl_usd ?? t.pnl_net ?? 0)}</td>
+        <td><span class="pill">${t.reason ?? '—'}</span></td>
+        <td style="font-size:10px;color:var(--muted)">${(t.signals ?? []).join(', ')}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No trades yet</td></tr>';
+
+  } catch (err) {
+    document.getElementById('no-data').style.display = '';
+    document.getElementById('main-content').style.display = 'none';
+    document.getElementById('status').textContent = 'OFFLINE';
+    document.getElementById('status').classList.add('offline');
+    document.getElementById('last-update').textContent = 'Agent not running — ' + err.message;
+  }
+}
+
+loadData();
+setInterval(loadData, 30000);
+</script>
+</body>
+</html>

@@ -1,8 +1,27 @@
+# Secrets
 .env
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-data_cache/
-screen_results_*.csv
 .venv/
+*.egg-info/
+
+# Runtime / generated data
 runtime/
+data_cache/
+
+# Intermediate research artifacts (kept locally in archive/)
+archive/
+*_screener.py
+*_trades.csv
+*_summary.csv
+*_results.csv
+
+# Results generated on demand
+results/
+
+# OS
+.DS_Store
+Thumbs.db

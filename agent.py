@@ -14,6 +14,7 @@ import anthropic
 import pandas as pd
 from dotenv import load_dotenv
 
+import erc8004_integration as erc8004
 import kraken_client as kraken
 import risk_guardrails as risk
 import strategy as strat
@@ -576,6 +577,105 @@ def build_signal_snapshot(signal: strat.Signal) -> dict:
     }
 
 
+def emit_erc8004_status_event(log_path: Path) -> dict | None:
+    try:
+        status = erc8004.get_identity_status()
+    except Exception as exc:
+        append_event(log_path, "erc8004_status", enabled=False, error=str(exc))
+        return None
+    append_event(log_path, "erc8004_status", **status)
+    return status
+
+
+def append_closed_trade(
+    trade_log: list[dict],
+    pair: str,
+    closed: strat.Trade,
+    exit_price: float,
+    exit_reason: str,
+    exit_ts: int,
+) -> float:
+    pnl_pct = closed.realized_pnl_pct() or 0.0
+    trade_log.append(
+        {
+            "pair": pair,
+            "entry": closed.entry_price,
+            "exit": exit_price,
+            "pnl_pct": pnl_pct,
+            "reason": exit_reason,
+            "exit_ts": exit_ts,
+        }
+    )
+    return pnl_pct
+
+
+def maybe_post_erc8004_feedback(
+    log_path: Path,
+    pair: str,
+    closed: strat.Trade,
+    exit_price: float,
+    exit_reason: str,
+    exit_ts: int,
+) -> None:
+    trade_result = {
+        "pair": pair,
+        "entry_price": closed.entry_price,
+        "exit_price": exit_price,
+        "entry_ts": closed.entry_ts,
+        "exit_ts": exit_ts,
+        "pnl_pct": closed.realized_pnl_pct() or 0.0,
+        "reason": exit_reason,
+        "size": closed.size,
+        "exit_mode": closed.exit_mode,
+        "signal_score": closed.signal_score,
+        "ai_confidence": closed.ai_confidence,
+    }
+    try:
+        feedback = erc8004.post_trade_feedback(trade_result)
+    except Exception as exc:
+        append_event(log_path, "erc8004_feedback", enabled=False, posted=False, error=str(exc))
+        return
+    append_event(log_path, "erc8004_feedback", **feedback)
+
+
+def maybe_sign_erc8004_intent(
+    log_path: Path,
+    pair: str,
+    size: float,
+    price: float,
+    signal: strat.Signal,
+    decision: AIDecision,
+    guardrail: risk.RiskDecision,
+    construction: str,
+) -> dict | None:
+    risk_summary = ", ".join(check.reason for check in guardrail.checks if not check.passed) or guardrail.summary
+    intent_payload = {
+        "pair": pair,
+        "side": "buy",
+        "size": f"{size:.8f}",
+        "price": f"{price:.8f}",
+        "timestamp": int(time.time()),
+        "guardrails_passed": guardrail.allowed,
+        "ai_confidence": decision.confidence,
+        "risk_summary": risk_summary,
+        "strategy": construction,
+    }
+    try:
+        artifact = erc8004.sign_trade_intent(intent_payload)
+    except Exception as exc:
+        append_event(log_path, "erc8004_trade_intent", enabled=False, skipped=True, error=str(exc))
+        return None
+    append_event(
+        log_path,
+        "erc8004_trade_intent",
+        pair=pair,
+        signal_score=signal.score,
+        signal_type=signal.signal_type,
+        **artifact,
+    )
+    return artifact
+
+
 def ask_claude_signal(client: anthropic.Anthropic, snapshot: dict) -> AIDecision:
     response = client.messages.create(
         model=DEFAULT_MODEL,
@@ -758,6 +858,7 @@ def run(
         resumed=resume_state,
         risk_config=asdict(risk_config),
     )
+    emit_erc8004_status_event(event_log_path)
     persist_state()
 
     while True:
@@ -866,16 +967,9 @@ def run(
                             note = ""
                             if client is not None:
                                 note = ask_claude_exit_review(client, pair, closed, live_exit_reason, pair_snapshot)
-                            pnl_pct = closed.realized_pnl_pct() or 0.0
-                            trade_log.append(
-                                {
-                                    "pair": pair,
-                                    "entry": closed.entry_price,
-                                    "exit": exit_price,
-                                    "pnl_pct": pnl_pct,
-                                    "reason": live_exit_reason,
-                                    "exit_ts": int(time.time()),
-                                }
+                            close_ts = int(time.time())
+                            pnl_pct = append_closed_trade(
+                                trade_log, pair, closed, exit_price, live_exit_reason, close_ts
                             )
                             pending_orders.pop(pair, None)
                             append_event(
@@ -887,6 +981,9 @@ def run(
                                 reason=live_exit_reason,
                                 exit_price=exit_price,
                                 pnl_pct=pnl_pct,
+                            )
+                            maybe_post_erc8004_feedback(
+                                event_log_path, pair, closed, exit_price, live_exit_reason, close_ts
                             )
                             persist_state()
                             print(
@@ -926,16 +1023,9 @@ def run(
                                 note = ""
                                 if client is not None:
                                     note = ask_claude_exit_review(client, pair, closed, pending.exit_reason, pair_snapshot)
-                                pnl_pct = closed.realized_pnl_pct() or 0.0
-                                trade_log.append(
-                                    {
-                                        "pair": pair,
-                                        "entry": closed.entry_price,
-                                        "exit": exit_price,
-                                        "pnl_pct": pnl_pct,
-                                        "reason": pending.exit_reason,
-                                        "exit_ts": int(time.time()),
-                                    }
+                                close_ts = int(time.time())
+                                pnl_pct = append_closed_trade(
+                                    trade_log, pair, closed, exit_price, pending.exit_reason, close_ts
                                 )
                                 print(
                                     f"  EXIT {pair} | {pending.exit_reason} market timeout | "
@@ -950,6 +1040,9 @@ def run(
                                     reason=pending.exit_reason,
                                     exit_price=exit_price,
                                     pnl_pct=pnl_pct,
+                                )
+                                maybe_post_erc8004_feedback(
+                                    event_log_path, pair, closed, exit_price, pending.exit_reason, close_ts
                                 )
                                 if note:
                                     print(f"  Claude: {note}")
@@ -1009,16 +1102,8 @@ def run(
                             note = ""
                             if client is not None:
                                 note = ask_claude_exit_review(client, pair, closed, pending.exit_reason, pair_snapshot)
-                            pnl_pct = closed.realized_pnl_pct() or 0.0
-                            trade_log.append(
-                                {
-                                    "pair": pair,
-                                    "entry": closed.entry_price,
-                                    "exit": exit_price,
-                                    "pnl_pct": pnl_pct,
-                                    "reason": pending.exit_reason,
-                                    "exit_ts": fill_ts,
-                                }
+                            pnl_pct = append_closed_trade(
+                                trade_log, pair, closed, exit_price, pending.exit_reason, fill_ts
                             )
                             print(
                                 f"  EXIT FILLED {pair} | {pending.exit_reason} | "
@@ -1033,6 +1118,9 @@ def run(
                                 reason=pending.exit_reason,
                                 exit_price=exit_price,
                                 pnl_pct=pnl_pct,
+                            )
+                            maybe_post_erc8004_feedback(
+                                event_log_path, pair, closed, exit_price, pending.exit_reason, fill_ts
                             )
                             persist_state()
                             if note:
@@ -1075,16 +1163,9 @@ def run(
                             note = ""
                             if client is not None:
                                 note = ask_claude_exit_review(client, pair, closed, exit_reason, pair_snapshot)
-                            pnl_pct = closed.realized_pnl_pct() or 0.0
-                            trade_log.append(
-                                {
-                                    "pair": pair,
-                                    "entry": closed.entry_price,
-                                    "exit": exit_price,
-                                    "pnl_pct": pnl_pct,
-                                    "reason": exit_reason,
-                                    "exit_ts": int(time.time()),
-                                }
+                            close_ts = int(time.time())
+                            pnl_pct = append_closed_trade(
+                                trade_log, pair, closed, exit_price, exit_reason, close_ts
                             )
                             print(
                                 f"  EXIT {pair} | {exit_reason} market | "
@@ -1098,6 +1179,9 @@ def run(
                                 reason=exit_reason,
                                 exit_price=exit_price,
                                 pnl_pct=pnl_pct,
+                            )
+                            maybe_post_erc8004_feedback(
+                                event_log_path, pair, closed, exit_price, exit_reason, close_ts
                             )
                             persist_state()
                             if note:
@@ -1196,16 +1280,8 @@ def run(
                             note = ""
                             if client is not None:
                                 note = ask_claude_exit_review(client, pair, closed, exit_reason, pair_snapshot)
-                            pnl_pct = closed.realized_pnl_pct() or 0.0
-                            trade_log.append(
-                                {
-                                    "pair": pair,
-                                    "entry": closed.entry_price,
-                                    "exit": exit_price,
-                                    "pnl_pct": pnl_pct,
-                                    "reason": exit_reason,
-                                    "exit_ts": last_ts,
-                                }
+                            pnl_pct = append_closed_trade(
+                                trade_log, pair, closed, exit_price, exit_reason, last_ts
                             )
                             print(
                                 f"  EXIT {pair} | {exit_reason} market | "
@@ -1219,6 +1295,9 @@ def run(
                                 reason=exit_reason,
                                 exit_price=exit_price,
                                 pnl_pct=pnl_pct,
+                            )
+                            maybe_post_erc8004_feedback(
+                                event_log_path, pair, closed, exit_price, exit_reason, last_ts
                             )
                             persist_state()
                             if note:
@@ -1497,6 +1576,16 @@ def run(
 
                         best_bid, best_ask = best_quotes.get(pair, (0.0, 0.0))
                         entry_price = _maker_entry_price(best_bid, best_ask, signal.price)
+                        intent_artifact = maybe_sign_erc8004_intent(
+                            event_log_path=event_log_path,
+                            pair=pair,
+                            size=size,
+                            price=entry_price,
+                            signal=signal,
+                            decision=decision,
+                            guardrail=guardrail,
+                            construction=construction,
+                        )
                         result = place_maker_limit(
                             mode,
                             "buy",
@@ -1567,6 +1656,8 @@ def run(
                             signal_type=signal.signal_type,
                             component_tags=list(signal.component_tags),
                             gate_trend_strength=signal.gate_trend_strength,
+                            intent_signature=(intent_artifact or {}).get("signature"),
+                            intent_hash=(intent_artifact or {}).get("message_hash"),
                         )
                         placed_entry = True
                         persist_state()

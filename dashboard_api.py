@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import erc8004_integration as erc8004
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -354,6 +355,22 @@ def _build_monitoring(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _build_identity(events: list[dict[str, Any]], limit: int = 5) -> dict[str, Any]:
+    status = _latest_event(events, "erc8004_status") or {}
+    if not status:
+        try:
+            status = erc8004.get_identity_status()
+        except Exception:
+            status = {}
+    intents = [event for event in reversed(events) if event.get("event") == "erc8004_trade_intent"][:limit]
+    feedback = [event for event in reversed(events) if event.get("event") == "erc8004_feedback"][:limit]
+    return {
+        "status": status,
+        "recent_intents": intents,
+        "recent_feedback": feedback,
+    }
+
+
 def create_app(
     log_dir: Path,
     state_file: Path,
@@ -413,6 +430,11 @@ def create_app(
     @app.get("/history")
     def history() -> dict[str, Any]:
         return _build_backtest(backtest_summary_file, backtest_trades_file)
+
+    @app.get("/identity")
+    def identity(limit: int = Query(5, ge=1, le=20)) -> dict[str, Any]:
+        events = _load_events(events_file)
+        return _build_identity(events, limit)
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:

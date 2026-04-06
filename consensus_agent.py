@@ -44,6 +44,15 @@ try:
 except ImportError:
     Anthropic = None
 
+try:
+    import erc8004_integration as erc8004
+    import risk_guardrails as risk
+    _HAS_GUARDRAILS = True
+except ImportError:
+    erc8004 = None  # type: ignore[assignment]
+    risk = None     # type: ignore[assignment]
+    _HAS_GUARDRAILS = False
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -571,6 +580,17 @@ def run(args: argparse.Namespace) -> None:
         kraken.paper_init(balance=args.paper_init_balance)
         print(f"[PAPER] Reset balance to ${args.paper_init_balance:,.2f}")
 
+    # ERC-8004 + risk setup
+    erc8004_cfg = None
+    risk_cfg = None
+    if _HAS_GUARDRAILS:
+        erc8004_cfg = erc8004.load_config()
+        risk_cfg = risk.RiskConfig()
+        if erc8004_cfg.enabled:
+            print(f"[ERC8004] Enabled | agent_id={erc8004_cfg.agent_id} | chain={erc8004_cfg.chain_id}")
+        else:
+            print("[ERC8004] Config not set — running without on-chain attestation")
+
     # State
     trade_log: list[dict] = []
     open_trade: dict | None = None
@@ -683,6 +703,21 @@ def run(args: argparse.Namespace) -> None:
                     trade_log.append(record)
                     kelly.update(pnl)
                     log_event(log_dir, "trade_closed", record)
+
+                    # ERC-8004 Reputation: post feedback on-chain after close
+                    if erc8004_cfg is not None and erc8004_cfg.agent_id is not None:
+                        try:
+                            fb_result = erc8004.post_trade_feedback(
+                                {**record, "exit_ts": int(time.time())},
+                                config=erc8004_cfg,
+                            )
+                            if fb_result.get("posted"):
+                                print(f"  [ERC8004] ✓ Feedback on-chain | pnl={pnl:+.3%} | tx={fb_result.get('tx_hash','')[:16]}...")
+                            elif fb_result.get("enabled") is False:
+                                pass  # not configured — silent
+                        except Exception as exc:
+                            print(f"  [ERC8004] Feedback error (non-fatal): {exc}")
+
                     open_trade = None
 
                     # Trade journal reflection
@@ -770,6 +805,81 @@ def run(args: argparse.Namespace) -> None:
                 print(f"  [SIZING] Kelly={kelly_mult:.2f}x vote_boost={vote_boost:.2f}x "
                       f"ai={ai_conviction:.2f} → final={size_mult:.2f}x "
                       f"notional=${notional:.2f}")
+
+                # ---- Risk guardrails pre-trade check ----
+                risk_summary = "guardrails_not_configured"
+                if risk_cfg is not None:
+                    portfolio_snapshot: dict = {}
+                    try:
+                        ps = kraken.paper_status()
+                        if isinstance(ps, dict):
+                            portfolio_snapshot = ps
+                    except Exception:
+                        pass
+                    atr_val = 0.0
+                    try:
+                        atr_val = float(df.iloc[-1].get("atr_pct", 0.02))
+                    except Exception:
+                        atr_val = 0.02
+                    risk_decision = risk.evaluate_entry(
+                        pair=pair,
+                        pair_snapshot={"spread_pct": 0.001, "atr_pct": atr_val, "obi": 0.5},
+                        portfolio=portfolio_snapshot,
+                        trade_log=trade_log,
+                        strategies={},
+                        pending_orders={},
+                        proposed_notional_usd=notional,
+                        requested_size_mult=size_mult,
+                        max_positions=1,
+                        now_ts=int(time.time()),
+                        config=risk_cfg,
+                    )
+                    risk_summary = risk_decision.summary
+                    if not risk_decision.allowed:
+                        print(f"  [RISK] BLOCKED: {risk_decision.summary}")
+                        log_event(log_dir, "risk_blocked", {
+                            "pair": pair,
+                            "reason": risk_decision.summary,
+                            "checks": [c.name for c in risk_decision.checks if not c.passed],
+                        })
+                        cooldown_until_bar[pair] = cycle + 3
+                        continue
+                    # Apply guardrail size adjustment
+                    if risk_decision.approved_size_mult < size_mult:
+                        size_mult = risk_decision.approved_size_mult
+                        notional = args.notional_usd * size_mult
+                        size = notional / vote.price
+                        print(f"  [RISK] Size capped → {size_mult:.2f}x | {risk_decision.summary}")
+                    else:
+                        print(f"  [RISK] PASS: {risk_decision.summary}")
+
+                # ---- ERC-8004 Validation: sign trade intent before entry ----
+                if erc8004_cfg is not None and erc8004_cfg.agent_id is not None:
+                    try:
+                        intent = erc8004.sign_trade_intent({
+                            "pair": pair,
+                            "side": "buy",
+                            "size": str(round(size, 8)),
+                            "price": str(round(vote.price, 8)),
+                            "timestamp": int(time.time()),
+                            "guardrails_passed": True,
+                            "ai_confidence": ai_conviction,
+                            "risk_summary": risk_summary,
+                            "strategy": "consensus_debate_agent",
+                        }, config=erc8004_cfg)
+                        if intent.get("enabled"):
+                            sig_preview = intent.get("signature", "")[:16]
+                            print(f"  [ERC8004] ✓ Validation signed | agent={intent.get('agent_id')} | sig={sig_preview}...")
+                            log_event(log_dir, "erc8004_validation", {
+                                "pair": pair,
+                                "agent_id": intent.get("agent_id"),
+                                "signature": intent.get("signature", ""),
+                                "message_hash": intent.get("message_hash", ""),
+                                "ai_confidence": ai_conviction,
+                                "risk_summary": risk_summary,
+                            })
+                    except Exception as exc:
+                        print(f"  [ERC8004] Validation error (non-fatal): {exc}")
 
                 # Place order
                 if args.mode == "paper":
