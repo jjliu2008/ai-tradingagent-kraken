@@ -1,7 +1,7 @@
 """
 Universe Scanner Agent
 ======================
-Watches 15 Kraken pairs simultaneously. Max 3 concurrent positions.
+Watches 67 Kraken pairs simultaneously. Max 10 concurrent positions.
 Plots continuous mark-to-market P&L every bar — produces a smooth curve
 like a professional trading system, not sparse once-a-week spikes.
 
@@ -47,49 +47,92 @@ load_dotenv()
 
 UNIVERSE = [
     # ── Tier A: backtest-validated long-term (120d cached data)
-    # GIGAUSD: +20.7% net / 120d | 69% win | 5.07 PF | Sharpe 23
-    # ZECUSD:  +4.8%  net / 60d  | 50% win | 3.76 PF
-    "GIGAUSD",
-    "ZECUSD",
-    # ── Tier A: live-scanner confirmed (332-pair scan, 30d live data)
-    # REDUSD:  3+ trades | 60%+ win | PF≥2  (scanner Tier A)
-    # SUIUSD:  3 trades  | 67% win  | PF=2.12 | Sharpe=15
-    "REDUSD",
-    "SUIUSD",
-    # ── Tier B: 2 trades, 100% win rate, ranked by net P&L
-    # KERNELUSD: +$16.78 | CHZUSD: +$15.54 | WIFUSD: +$9.30
-    # ZAMAUSD: +$4.73   | CCUSD:  +$4.83   | HYPEUSD: +$2.57
-    "KERNELUSD",
-    "CHZUSD",
-    "WIFUSD",
-    "ZAMAUSD",
-    "CCUSD",
-    "HYPEUSD",
+    "GIGAUSD",    # +20.7% net/120d | 69% win | 5.07 PF | Sharpe 23
+    "ZECUSD",     # +4.8%  net/60d  | 50% win | 3.76 PF
+    # ── Tier A: live-scanner confirmed (332-pair scan, 30d)
+    "REDUSD",     # 3+ trades | 60%+ win | PF≥2
+    "SUIUSD",     # 3 trades  | 67% win  | PF=2.12 | Sharpe=15
+    # ── Tier B: 2 trades, 100% win — ranked by net P&L
+    "KERNELUSD",  # +$16.78
+    "CHZUSD",     # +$15.54
+    "WIFUSD",     # +$9.30
+    "OMIUSD",     # +$3.96
+    "ZAMAUSD",    # +$4.73
+    "CCUSD",      # +$4.83
+    "HYPEUSD",    # +$2.57
+    # ── Tier C: 1 trade, 100% win — ranked by net P&L (all positive)
+    "ALEOUSD",    # +$17.25
+    "HIPPOUSD",   # +$13.34
+    "HOUSEUSD",   # +$9.71
+    "FHEUSD",     # +$9.24
+    "IDEXUSD",    # +$8.00
+    "DMCUSD",     # +$7.89
+    "CLVUSD",     # +$7.78
+    "ICXUSD",     # +$6.71
+    "LOFIUSD",    # +$6.33
+    "BABYUSD",    # +$5.95
+    "BERAUSD",    # +$5.51
+    "METHUSD",    # +$4.58
+    "LTCUSD",     # +$3.64
+    "ARBUSD",     # +$3.96
+    "PARTIUSD",   # +$2.48
+    "ATOMUSD",    # +$1.47
+    "CELOUSD",    # +$1.28
+    "JUPUSD",     # +$1.17
+    "FLOCKUSD",   # +$1.17
+    "LINKUSD",    # +$0.69
+    "MOONUSD",    # +$0.62
+    # ── Extended: high-volume / high-momentum meme & alt coins
+    "PEPEUSD",    # meme — high vol spikes
+    "BONKUSD",    # meme — frequent momentum bursts
+    "FLOKUSD",    # meme — volatile, signal-friendly
+    "MEMEUSD",    # meme sector
+    "POPCATUSD",  # meme — high ATR
+    "MOGUSD",     # meme sector
+    "TURBOUSD",   # meme — small cap momentum
+    "GOATUSD",    # meme sector
+    "PENGUUSD",   # meme — community-driven vol
+    "COQUSD",     # meme
+    "NIGHTUSD",   # speculative
+    # ── Extended: established mid/large caps with good OHLC history
+    "SOLUSD",     # large cap — frequent MACD signals
+    "AVAXUSD",    # large cap
+    "ADAUSD",     # large cap
+    "XRPUSD",     # large cap — high volume
+    "DOTUSD",     # large cap
+    "NEARUSD",    # L1 — momentum friendly
+    "INJUSD",     # DeFi — volatile
+    "AAVEUSD",    # DeFi
+    "SEIUSD",     # L1 — newer, volatile
+    "APTUSD",     # L1
+    "OPUSD",      # L2
+    "STRKUSD",    # L2
+    "ZKUSD",      # L2
+    "XBTUSD",     # BTC — large cap, frequent signals
+    "ETHUSD",     # ETH — most liquid
+    "UNIUSD",     # DEX blue chip
+    "ENAUSD",     # stablecoin yield — volatile
+    "FETUSD",     # AI sector
+    "VIRTUALUSD", # AI sector
+    "TAOUSD",     # AI sector — high vol
+    "TIAUSD",     # modular blockchain
+    "DYMUSD",     # modular blockchain
+    "STXUSD",     # BTC L2
+    "ETHFIUSD",   # liquid staking
+    "XDGUSD",     # DOGE — high volume
+    "TRXUSD",     # TRX — active
 ]
 
-# Per-pair minimum vote threshold
-# Tier A pairs (more historical evidence) stay at 2/5
-# Tier B pairs (2-trade sample) also 2/5 — consensus filter is critical
-PAIR_MIN_VOTES: dict[str, int] = {
-    "GIGAUSD":   2,
-    "ZECUSD":    2,
-    "REDUSD":    2,
-    "SUIUSD":    2,
-    "KERNELUSD": 2,
-    "CHZUSD":    2,
-    "WIFUSD":    2,
-    "ZAMAUSD":   2,
-    "CCUSD":     2,
-    "HYPEUSD":   2,
-}
-DEFAULT_MIN_VOTES = 2   # fallback for any pair not in PAIR_MIN_VOTES
+# All pairs use 2/5 consensus — the filter is the safety net across all tiers
+PAIR_MIN_VOTES: dict[str, int] = {}   # empty = all pairs use DEFAULT
+DEFAULT_MIN_VOTES = 2
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_POSITIONS    = 5        # concurrent open positions (more pairs = more concurrency)
-BASE_NOTIONAL    = 100.0    # USD per position (reduced from 150 to manage risk across larger universe)
+MAX_POSITIONS    = 10       # concurrent open positions (67-pair universe, 10 max at once)
+BASE_NOTIONAL    = 75.0     # USD per position (max exposure = 10 × $75 = $750 at peak)
 STOP_PCT         = 0.015    # 1.5% stop loss
 TARGET_PCT       = 0.040    # 4.0% take profit
 MAX_HOLD_BARS    = 10       # exit after N bars if no TP/SL
