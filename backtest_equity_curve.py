@@ -40,6 +40,12 @@ DATA_DIR      = Path("data_cache")
 PAIR_MIN_VOTES: dict[str, int] = {
     "GIGAUSD": 2,
     "ZECUSD":  2,
+    "SOLUSD":  2,
+    "ETHUSD":  2,
+    "XBTUSD":  2,
+    "LINKUSD": 2,
+    "AVAXUSD": 2,
+    "OPUSD":   2,
 }
 DEFAULT_MIN_VOTES = 2
 

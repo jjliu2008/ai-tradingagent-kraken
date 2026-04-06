@@ -199,8 +199,25 @@ def signal_sweet_spot(df: pd.DataFrame) -> bool:
     )
 
 
-SIGNALS = [signal_macd_accel, signal_bb_squeeze, signal_atr_compress, signal_sweet_spot]
-SIGNAL_NAMES = ['macd_accel', 'bb_squeeze', 'atr_compress', 'sweet_spot']
+def signal_oversold_bounce(df: pd.DataFrame) -> bool:
+    """Mean-reversion bounce: prior weakness + reversal bar + volume surge.
+    Fires in downtrend conditions where breakout signals cannot.
+    """
+    if len(df) < 30:
+        return False
+    last = df.iloc[-1]
+    prior_mom = [float(df.iloc[-i]['momentum_medium']) for i in range(2, 6)]
+    prior_weak = sum(1 for m in prior_mom if m < -0.003) >= 3
+    macd_turning = float(last['macd_hist']) > float(df.iloc[-2]['macd_hist'])
+    vol_surge = float(last['volume_ratio']) >= 1.4
+    closing_up = float(last['close_location']) > 0.50
+    vwap_dist = float(last['distance_from_vwap'])
+    near_vwap = -0.06 <= vwap_dist <= 0.005
+    return bool(prior_weak and macd_turning and vol_surge and closing_up and near_vwap)
+
+
+SIGNALS = [signal_macd_accel, signal_bb_squeeze, signal_atr_compress, signal_sweet_spot, signal_oversold_bounce]
+SIGNAL_NAMES = ['macd_accel', 'bb_squeeze', 'atr_compress', 'sweet_spot', 'oversold_bounce']
 
 
 @dataclass
