@@ -395,10 +395,14 @@ class AIFilter:
 # ---------------------------------------------------------------------------
 
 def fetch_ohlc_df(pair: str, interval: int = 60) -> Optional[pd.DataFrame]:
-    """Fetch OHLC, return computed-feature DataFrame or None."""
+    """Fetch OHLC, return computed-feature DataFrame or None.
+    Drops the last (incomplete/still-forming) candle — Kraken always appends
+    the current open bar which has near-zero volume and unreliable close_location.
+    """
     try:
         raw = kraken.fetch_ohlc(pair, interval=interval)
         df  = strat.parse_ohlc(raw)
+        df  = df.iloc[:-1]   # drop incomplete current candle
         if len(df) < 60:
             return None
         return compute_features(df)
