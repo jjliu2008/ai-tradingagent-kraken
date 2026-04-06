@@ -554,6 +554,7 @@ def run(args: argparse.Namespace) -> None:
                 score, conditions = score_signal(df)
                 # Use per-pair threshold if defined, else global --min-score
                 pair_threshold = PAIR_MIN_VOTES.get(pair, args.min_score)
+                log(f"  📊 {pair:<12} score={score}/{pair_threshold} signals=[{', '.join(conditions) if conditions else 'none'}]")
                 if score >= pair_threshold:
                     candidates.append((pair, score, conditions, df))
 
