@@ -31,6 +31,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import kraken_client as kraken
+import research_runtime as rr
 import strategy as strat
 
 try:
@@ -40,6 +41,11 @@ except ImportError:
     _HAS_CLAUDE = False
 
 load_dotenv()
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ---------------------------------------------------------------------------
 # Universe — pairs to watch
@@ -144,6 +150,147 @@ ROUND_TRIP_COST  = (COMMISSION + SLIPPAGE) * 2
 
 MIN_SIGNAL_VOTES = 2   # global default (overridden per-pair by PAIR_MIN_VOTES)
 MIN_SIGNAL_SCORE = 2   # alias used by argparse default
+
+# ---------------------------------------------------------------------------
+# Live tradability filter
+# ---------------------------------------------------------------------------
+
+BLACKLIST_SUBSTRINGS = (".d",)
+
+
+def _safe_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_last_price(ticker_payload: dict, pair: str) -> float | None:
+    if not isinstance(ticker_payload, dict):
+        return None
+    data = ticker_payload.get(pair)
+    if data is None and ticker_payload:
+        data = next(iter(ticker_payload.values()))
+    if not isinstance(data, dict):
+        return None
+    last = data.get("c")
+    if isinstance(last, list) and last:
+        return _safe_float(last[0])
+    return None
+
+
+def _best_spread_pct(orderbook_payload: dict, pair: str) -> float | None:
+    if not isinstance(orderbook_payload, dict):
+        return None
+    book = orderbook_payload.get(pair)
+    if book is None and orderbook_payload:
+        book = next(iter(orderbook_payload.values()))
+    if not isinstance(book, dict):
+        return None
+    asks = book.get("asks") or []
+    bids = book.get("bids") or []
+    if not asks or not bids:
+        return None
+    ask = _safe_float(asks[0][0] if isinstance(asks[0], (list, tuple)) and asks[0] else None)
+    bid = _safe_float(bids[0][0] if isinstance(bids[0], (list, tuple)) and bids[0] else None)
+    if ask is None or bid is None or ask <= 0 or bid <= 0:
+        return None
+    mid = (ask + bid) / 2.0
+    if mid <= 0:
+        return None
+    return (ask - bid) / mid
+
+
+def validate_tradable_pairs(
+    requested_pairs: list[str],
+    notional: float,
+    max_spread_pct: float | None = None,
+) -> tuple[list[str], list[dict]]:
+    """
+    Keep only pairs Kraken currently reports as online and that can accept the
+    configured notional based on live price, ordermin, and costmin.
+    """
+    requested = [pair.strip().upper() for pair in requested_pairs if pair.strip()]
+    if not requested:
+        return [], []
+
+    try:
+        asset_pairs = kraken.fetch_asset_pairs()
+    except Exception as exc:
+        log(f"! Could not fetch AssetPairs; using requested universe unchanged ({exc})")
+        return requested, []
+
+    by_altname: dict[str, dict] = {}
+    for raw_name, info in asset_pairs.items():
+        if isinstance(info, dict):
+            by_altname[str(info.get("altname") or raw_name).upper()] = info
+
+    valid: list[str] = []
+    diagnostics: list[dict] = []
+
+    for pair in requested:
+        diag = {"pair": pair, "status": "rejected", "reasons": []}
+        info = by_altname.get(pair)
+        if info is None:
+            diag["reasons"].append("missing_from_assetpairs")
+            diagnostics.append(diag)
+            continue
+
+        status = str(info.get("status") or "").lower()
+        quote = str(info.get("quote") or "").upper()
+        if status != "online":
+            diag["reasons"].append(f"status:{status or 'unknown'}")
+        if quote not in {"USD", "ZUSD"}:
+            diag["reasons"].append(f"quote:{quote or 'unknown'}")
+        if any(token in pair for token in BLACKLIST_SUBSTRINGS):
+            diag["reasons"].append("dark_pool_or_blacklisted")
+
+        ordermin = _safe_float(info.get("ordermin"))
+        costmin = _safe_float(info.get("costmin"))
+        diag["ordermin"] = ordermin
+        diag["costmin"] = costmin
+
+        last_price = None
+        try:
+            last_price = _extract_last_price(kraken.fetch_ticker(pair), pair)
+        except Exception as exc:
+            diag["reasons"].append(f"ticker_error:{type(exc).__name__}")
+
+        if last_price is None or last_price <= 0:
+            diag["reasons"].append("no_last_price")
+        else:
+            size = notional / last_price
+            diag["last_price"] = last_price
+            diag["size_at_notional"] = size
+            if ordermin is not None and size < ordermin:
+                diag["reasons"].append("below_ordermin")
+            if costmin is not None and notional < costmin:
+                diag["reasons"].append("below_costmin")
+
+            try:
+                spread_pct = _best_spread_pct(kraken.fetch_orderbook(pair), pair)
+                diag["spread_pct"] = spread_pct
+                if (
+                    max_spread_pct is not None
+                    and spread_pct is not None
+                    and spread_pct > max_spread_pct
+                ):
+                    diag["reasons"].append("spread_too_wide")
+            except Exception as exc:
+                diag["reasons"].append(f"orderbook_error:{type(exc).__name__}")
+
+        if diag["reasons"]:
+            diagnostics.append(diag)
+            continue
+
+        diag["status"] = "tradable"
+        diagnostics.append(diag)
+        valid.append(pair)
+
+    return valid, diagnostics
+
 
 # ---------------------------------------------------------------------------
 # Features — full set used by all 4 proven signals
@@ -315,6 +462,10 @@ class OpenPosition:
     target_price: float
     signal_score: int
     conditions:   list[str]
+    construction: str = ""
+    entry_filter: str = ""
+    exit_profile: str = "base"
+    max_hold_bars: int = MAX_HOLD_BARS
     current_price: float = 0.0
     bars_held:    int = 0
 
@@ -339,19 +490,9 @@ class OpenPosition:
             return "STOP_LOSS"
         if self.current_price >= self.target_price:
             return "TAKE_PROFIT"
-        if self.bars_held >= MAX_HOLD_BARS:
+        if self.bars_held >= self.max_hold_bars:
             return "TIME_LIMIT"
         return None
-
-    def should_trend_exit(self, df: pd.DataFrame) -> bool:
-        if self.bars_held < TREND_EXIT_BARS or len(df) < 3:
-            return False
-        last = df.iloc[-1]
-        try:
-            ema12 = float(last["ema12"]); ema26 = float(last["ema26"])
-            return ema12 < ema26
-        except Exception:
-            return False
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +523,9 @@ class PnLCurve:
             "open_positions": [
                 {
                     "pair":               p.pair,
+                    "construction":       p.construction,
+                    "entry_filter":       p.entry_filter,
+                    "exit_profile":       p.exit_profile,
                     "entry_price":        p.entry_price,
                     "current_price":      p.current_price,
                     "unrealized_pnl_pct": round(p.unrealized_pnl_pct, 6),
@@ -415,6 +559,9 @@ class PnLCurve:
             "bars_held":   pos.bars_held,
             "score":       pos.signal_score,
             "conditions":  pos.conditions,
+            "construction": pos.construction,
+            "entry_filter": pos.entry_filter,
+            "exit_profile": pos.exit_profile,
             "entry_ts":    pos.entry_ts,
             "exit_ts":     time.time(),
         }
@@ -495,6 +642,18 @@ def fetch_ohlc_df(pair: str, interval: int = 60) -> Optional[pd.DataFrame]:
         return None
 
 
+def fetch_ohlc_raw(pair: str, interval: int = 15) -> Optional[pd.DataFrame]:
+    try:
+        raw = kraken.fetch_ohlc(pair, interval=interval)
+        df = strat.parse_ohlc(raw)
+        df = df.iloc[:-1]
+        if len(df) < 60:
+            return None
+        return df.reset_index(drop=True)
+    except Exception:
+        return None
+
+
 def current_price(pair: str) -> Optional[float]:
     try:
         raw = kraken.fetch_ticker(pair)
@@ -516,6 +675,11 @@ def current_price(pair: str) -> Optional[float]:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Universe Scanner — 15-pair concurrent trading")
     p.add_argument("--mode",        choices=["paper", "live"], default="paper")
+    p.add_argument("--strategy-mode", choices=["consensus", "research"], default="consensus")
+    p.add_argument("--use-research-universe", action="store_true",
+                   help="Use the research-agent active pair registry instead of the hardcoded universe.")
+    p.add_argument("--include-shadow", action="store_true",
+                   help="When using the research universe, include shadow pairs too.")
     p.add_argument("--universe",    default=",".join(UNIVERSE))
     p.add_argument("--max-pos",     type=int,   default=MAX_POSITIONS)
     p.add_argument("--notional",    type=float, default=BASE_NOTIONAL)
@@ -528,6 +692,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reset-paper", action="store_true")
     p.add_argument("--paper-balance", type=float, default=10000.0)
     p.add_argument("--log-dir",     default="runtime/universe")
+    p.add_argument("--max-spread-pct", type=float, default=0.03,
+                   help="Reject pairs whose best bid/ask spread exceeds this fraction of mid.")
     return p.parse_args()
 
 
@@ -547,7 +713,31 @@ def run(args: argparse.Namespace) -> None:
         with event_log.open("a") as f:
             f.write(json.dumps(record) + "\n")
 
-    pairs = [p.strip() for p in args.universe.split(",") if p.strip()]
+    if args.strategy_mode == "research":
+        if args.interval != 15:
+            raise SystemExit("Research strategy mode only supports --interval 15.")
+        if args.use_research_universe:
+            requested_pairs = rr.active_research_pairs(include_shadow=args.include_shadow)
+        else:
+            requested_pairs = [p.strip().upper() for p in args.universe.split(",") if p.strip()]
+    else:
+        requested_pairs = [p.strip().upper() for p in args.universe.split(",") if p.strip()]
+    pairs, tradability = validate_tradable_pairs(
+        requested_pairs=requested_pairs,
+        notional=args.notional,
+        max_spread_pct=args.max_spread_pct,
+    )
+    rejected_pairs = [item for item in tradability if item.get("status") != "tradable"]
+
+    if rejected_pairs:
+        log(f"Tradability filter kept {len(pairs)}/{len(requested_pairs)} requested pairs")
+        for item in rejected_pairs[:12]:
+            log(f"  × {item['pair']}: {', '.join(item.get('reasons', []))}")
+        if len(rejected_pairs) > 12:
+            log(f"  ... {len(rejected_pairs) - 12} more rejected pairs")
+
+    if not pairs:
+        raise SystemExit("No tradable pairs remain after live Kraken validation.")
 
     # AI filter (optional)
     ai_filter: Optional[AIFilter] = None
@@ -568,13 +758,28 @@ def run(args: argparse.Namespace) -> None:
     cycle = 0
 
     print(f"\n{'═'*65}")
-    print(f"  UNIVERSE SCANNER | {args.mode.upper()} | {len(pairs)} pairs | max {args.max_pos} positions")
-    print(f"  Notional: ${args.notional:.0f}/trade | Stop: {STOP_PCT:.1%} | Target: {TARGET_PCT:.1%}")
+    print(f"  UNIVERSE SCANNER | {args.mode.upper()} | {args.strategy_mode.upper()} | {len(pairs)} pairs | max {args.max_pos} positions")
+    if args.strategy_mode == "research":
+        print(f"  Notional: ${args.notional:.0f}/trade | Pair-specific tuned exits from research registry")
+    else:
+        print(f"  Notional: ${args.notional:.0f}/trade | Stop: {STOP_PCT:.1%} | Target: {TARGET_PCT:.1%}")
     print(f"  AI filter: {'ON' if ai_filter else 'OFF'} | Min score: {args.min_score}/5")
     print(f"  P&L curve → {pnl_curve.log_path}")
     print(f"{'═'*65}\n")
 
-    emit("agent_started", pairs=pairs, max_pos=args.max_pos, notional=args.notional)
+    emit(
+        "agent_started",
+        pairs=pairs,
+        requested_pairs=requested_pairs,
+        strategy_mode=args.strategy_mode,
+        use_research_universe=args.use_research_universe,
+        include_shadow=args.include_shadow,
+        max_pos=args.max_pos,
+        notional=args.notional,
+        max_spread_pct=args.max_spread_pct,
+        tradable_pairs=pairs,
+        rejected_pairs=rejected_pairs,
+    )
 
     while True:
         cycle += 1
@@ -596,9 +801,22 @@ def run(args: argparse.Namespace) -> None:
 
             # Also check trend exit using fresh OHLC
             if reason is None and pos.bars_held >= TREND_EXIT_BARS:
-                df_fresh = fetch_ohlc_df(pair, interval=args.interval)
-                if df_fresh is not None and pos.should_trend_exit(df_fresh):
-                    reason = "TREND_LOST"
+                if args.strategy_mode == "research":
+                    raw_fresh = fetch_ohlc_raw(pair, interval=args.interval)
+                    plan = rr.plan_for_pair(pair)
+                    if raw_fresh is not None and plan is not None:
+                        signal_info = rr.detect_signal(raw_fresh, plan)
+                        if signal_info is not None and rr.should_trend_exit(signal_info["frame"]):
+                            reason = "TREND_LOST"
+                else:
+                    df_fresh = fetch_ohlc_df(pair, interval=args.interval)
+                    if df_fresh is not None:
+                        last = df_fresh.iloc[-1]
+                        try:
+                            if float(last["ema_fast"]) < float(last["ema_slow"]):
+                                reason = "TREND_LOST"
+                        except Exception:
+                            pass
 
             if reason:
                 to_close.append((pair, price, reason))
@@ -636,16 +854,36 @@ def run(args: argparse.Namespace) -> None:
                 if cooldowns.get(pair, 0) >= cycle:
                     continue
 
-                df = fetch_ohlc_df(pair, interval=args.interval)
-                if df is None:
-                    continue
+                if args.strategy_mode == "research":
+                    plan = rr.plan_for_pair(pair)
+                    if plan is None:
+                        continue
+                    raw_df = fetch_ohlc_raw(pair, interval=args.interval)
+                    if raw_df is None:
+                        continue
+                    signal_info = rr.detect_signal(raw_df, plan)
+                    if signal_info is None:
+                        continue
+                    score = int(round(float(signal_info["score"])))
+                    conditions = list(signal_info["conditions"])
+                    log(
+                        f"  📊 {pair:<12} plan={plan.construction}/{plan.entry_filter}/{plan.exit_profile} "
+                        f"score={score} comps={signal_info['component_count']} "
+                        f"conds=[{', '.join(conditions) if conditions else 'none'}]"
+                    )
+                    if bool(signal_info["signal"]):
+                        candidates.append((pair, score, conditions, signal_info["frame"]))
+                else:
+                    df = fetch_ohlc_df(pair, interval=args.interval)
+                    if df is None:
+                        continue
 
-                score, conditions = score_signal(df)
-                # Use per-pair threshold if defined, else global --min-score
-                pair_threshold = PAIR_MIN_VOTES.get(pair, args.min_score)
-                log(f"  📊 {pair:<12} score={score}/{pair_threshold} signals=[{', '.join(conditions) if conditions else 'none'}]")
-                if score >= pair_threshold:
-                    candidates.append((pair, score, conditions, df))
+                    score, conditions = score_signal(df)
+                    # Use per-pair threshold if defined, else global --min-score
+                    pair_threshold = PAIR_MIN_VOTES.get(pair, args.min_score)
+                    log(f"  📊 {pair:<12} score={score}/{pair_threshold} signals=[{', '.join(conditions) if conditions else 'none'}]")
+                    if score >= pair_threshold:
+                        candidates.append((pair, score, conditions, df))
 
             # Sort by score descending — take best signals first
             candidates.sort(key=lambda x: x[1], reverse=True)
@@ -654,6 +892,7 @@ def run(args: argparse.Namespace) -> None:
                 if len(open_positions) >= args.max_pos:
                     break
 
+                plan = rr.plan_for_pair(pair) if args.strategy_mode == "research" else None
                 price = float(df["close"].iloc[-1])
 
                 # AI filter (optional)
@@ -689,16 +928,32 @@ def run(args: argparse.Namespace) -> None:
                     target_price = price * (1 + TARGET_PCT),
                     signal_score = score,
                     conditions   = conditions,
+                    construction = plan.construction if plan else "consensus_2of5",
+                    entry_filter = plan.entry_filter if plan else "votes",
+                    exit_profile = plan.exit_profile if plan else "base",
                     current_price= price,
                 )
+                if plan is not None:
+                    exit_spec = rr.EXIT_PROFILES.get(plan.exit_profile, rr.EXIT_PROFILES["base"])
+                    pos.stop_price = price * (1 - float(exit_spec["min_stop_pct"]))
+                    pos.target_price = price * (1 + float(exit_spec["target_pct"]))
+                    pos.max_hold_bars = int(exit_spec["max_hold_bars"])
                 open_positions[pair] = pos
 
-                thresh = PAIR_MIN_VOTES.get(pair, args.min_score)
-                log(f"  🟢 ENTER  {pair:<12} score={score}/{thresh}+ "
-                    f"conds={conditions} "
-                    f"price={price:.5g} stop={pos.stop_price:.5g}")
+                if plan is not None:
+                    log(
+                        f"  🟢 ENTER  {pair:<12} {plan.construction}/{plan.entry_filter}/{plan.exit_profile} "
+                        f"score={score} conds={conditions} price={price:.5g} stop={pos.stop_price:.5g}"
+                    )
+                else:
+                    thresh = PAIR_MIN_VOTES.get(pair, args.min_score)
+                    log(f"  🟢 ENTER  {pair:<12} score={score}/{thresh}+ "
+                        f"conds={conditions} "
+                        f"price={price:.5g} stop={pos.stop_price:.5g}")
                 emit("trade_opened", pair=pair, score=score, conditions=conditions,
-                     price=price, notional=args.notional, order_id=order_id)
+                     price=price, notional=args.notional, order_id=order_id,
+                     construction=pos.construction, entry_filter=pos.entry_filter,
+                     exit_profile=pos.exit_profile)
 
         # ── 4. Record PnL curve point (mark-to-market) ──────────────────────
         point = pnl_curve.record(open_positions)
