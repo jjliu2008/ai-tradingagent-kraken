@@ -1,18 +1,16 @@
 """
 Universe Scanner Agent
 ======================
-Watches 67 Kraken pairs simultaneously. Max 10 concurrent positions.
-Plots continuous mark-to-market P&L every bar — produces a smooth curve
-like a professional trading system, not sparse once-a-week spikes.
+Default mode runs the robust 5-pair research registry:
+GIGAUSD, BABYUSD, FHEUSD, KERNELUSD, HOUSEUSD.
 
-How the smooth curve works:
-  - Open positions are marked to current market price every poll cycle
-  - Realized + unrealized PnL is logged every cycle
-  - With 3 positions always working, something is always moving
+It plots continuous mark-to-market P&L every poll cycle and supports a legacy
+consensus universe mode as an explicit override.
 
 Usage:
     python universe_scanner_agent.py --mode paper --reset-paper
-    python universe_scanner_agent.py --mode paper --poll 60 --max-positions 3
+    python universe_scanner_agent.py --mode paper --poll 60 --max-pos 3
+    python universe_scanner_agent.py --strategy-mode consensus --universe GIGAUSD,ZECUSD
 """
 from __future__ import annotations
 
@@ -32,7 +30,9 @@ from dotenv import load_dotenv
 
 import kraken_client as kraken
 import research_runtime as rr
+import roster_manager as rm
 import strategy as strat
+import suppression_state as ss
 
 try:
     from anthropic import Anthropic
@@ -48,7 +48,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ---------------------------------------------------------------------------
-# Universe — pairs to watch
+# Legacy consensus universe — only used when --strategy-mode consensus
 # ---------------------------------------------------------------------------
 
 UNIVERSE = [
@@ -137,8 +137,8 @@ DEFAULT_MIN_VOTES = 2
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_POSITIONS    = 10       # concurrent open positions (67-pair universe, 10 max at once)
-BASE_NOTIONAL    = 75.0     # USD per position (max exposure = 10 × $75 = $750 at peak)
+MAX_POSITIONS    = 7        # expanded to 7-pair active registry
+BASE_NOTIONAL    = 75.0     # USD per position
 STOP_PCT         = 0.015    # 1.5% stop loss
 TARGET_PCT       = 0.040    # 4.0% take profit
 MAX_HOLD_BARS    = 10       # exit after N bars if no TP/SL
@@ -623,6 +623,111 @@ class AIFilter:
 
 
 # ---------------------------------------------------------------------------
+# Claude reviewer — research mode only
+# Runs after the regime gate passes. Adds a reasoning layer before entry.
+# ---------------------------------------------------------------------------
+
+_CLAUDE_REVIEW_PROMPT = """\
+You are a signal reviewer for an autonomous crypto momentum trading agent.
+A pair-specific setup has cleared the portfolio regime gate and fired an entry signal.
+
+Signal
+  Pair        : {pair}
+  Strategy    : {construction} / {entry_filter} / {exit_profile}
+  Gate metrics: trend_strength_60={g60:.4f} (min 0.006)  atr_pct={atr:.4f} (min 0.006)
+  Components  : {components}
+  Score       : {score}
+
+Recent 8 bars (15 min):
+{price_context}
+
+Portfolio
+  Open positions : {n_open}/{max_pos}
+  Open pairs     : {open_pairs}
+  Unrealized P&L : ${unrealized:.2f}
+
+Approve or reject this trade. Respond in JSON only:
+{{"approve": true|false, "reason": "max 8 words", "confidence": 0.0-1.0}}
+
+Approve if: trend is clear, gate metrics are well above threshold, components align.
+Reject if: chasing a spike (atr > 0.03), single weak component, or already overexposed.
+"""
+
+
+class ClaudeReviewer:
+    """
+    Calls Claude to review a gated research-mode signal before entry.
+    Fails open (approve=True) on any error — the signal and gate already
+    did the heavy lifting; the reviewer adds reasoning, not a hard block.
+    """
+
+    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
+        if not _HAS_CLAUDE:
+            raise ImportError("pip install anthropic")
+        self.client = Anthropic()
+        self.model  = model
+        self.calls  = 0
+        self.vetoes = 0
+
+    def review(
+        self,
+        pair:           str,
+        plan:           "rr.PairResearchPlan",  # type: ignore[name-defined]
+        signal_info:    dict,
+        open_positions: dict,
+        max_pos:        int,
+    ) -> tuple[bool, str, float]:
+        """
+        Returns (approve, reason, confidence).
+        approve=True means Claude endorses the trade.
+        """
+        try:
+            df = signal_info["frame"]
+            last8 = df.tail(8)[["close", "volume", "atr_pct",
+                                 "gate_trend_strength_60"]].round(6)
+            price_context = last8.to_string(index=False)
+
+            open_pairs  = list(open_positions.keys()) or ["none"]
+            unrealized  = sum(p.unrealized_pnl_usd for p in open_positions.values())
+
+            prompt = _CLAUDE_REVIEW_PROMPT.format(
+                pair=pair,
+                construction=plan.construction,
+                entry_filter=plan.entry_filter,
+                exit_profile=plan.exit_profile,
+                g60=signal_info["gate_trend_strength_60"],
+                atr=signal_info["atr_pct"],
+                components=", ".join(signal_info["conditions"]) or "none",
+                score=signal_info["score"],
+                price_context=price_context,
+                n_open=len(open_positions),
+                max_pos=max_pos,
+                open_pairs=open_pairs,
+                unrealized=unrealized,
+            )
+
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=100,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = resp.content[0].text.strip()
+            if "```" in text:
+                text = text.split("```")[1].lstrip("json").strip()
+            result     = json.loads(text)
+            approve    = bool(result.get("approve", True))
+            reason     = str(result.get("reason", ""))
+            confidence = float(result.get("confidence", 1.0))
+            self.calls += 1
+            if not approve:
+                self.vetoes += 1
+            return approve, reason, confidence
+
+        except Exception:
+            return True, "reviewer_unavailable", 1.0
+
+
+# ---------------------------------------------------------------------------
 # Fetching helpers
 # ---------------------------------------------------------------------------
 
@@ -669,15 +774,38 @@ def current_price(pair: str) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# Suppression state helpers
+# ---------------------------------------------------------------------------
+
+def load_suppression_state() -> dict:
+    """Load current suppression state. Returns safe defaults if file is missing."""
+    return ss.load_state()
+
+
+def suppressed_pairs(state: dict) -> set:
+    """Return set of pair names that must not receive new entries."""
+    if state.get("portfolio_state") == "off":
+        return set(state.get("pairs", {}).keys())
+    return {
+        pair
+        for pair, info in state.get("pairs", {}).items()
+        if not info.get("allow_new_entries", True)
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Universe Scanner — 15-pair concurrent trading")
+    p = argparse.ArgumentParser(description="Research-registry Kraken portfolio trader")
     p.add_argument("--mode",        choices=["paper", "live"], default="paper")
-    p.add_argument("--strategy-mode", choices=["consensus", "research"], default="consensus")
-    p.add_argument("--use-research-universe", action="store_true",
+    p.add_argument("--strategy-mode", choices=["consensus", "research"], default="research")
+    p.set_defaults(use_research_universe=True)
+    p.add_argument("--use-research-universe", dest="use_research_universe", action="store_true",
                    help="Use the research-agent active pair registry instead of the hardcoded universe.")
+    p.add_argument("--no-research-universe", dest="use_research_universe", action="store_false",
+                   help="Disable the research-agent registry and use an explicit universe instead.")
     p.add_argument("--include-shadow", action="store_true",
                    help="When using the research universe, include shadow pairs too.")
     p.add_argument("--universe",    default=",".join(UNIVERSE))
@@ -687,7 +815,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--interval",    type=int,   default=15,   help="OHLC interval in minutes")
     p.add_argument("--min-score",   type=int,   default=MIN_SIGNAL_SCORE)
     p.add_argument("--cycles",      type=int,   default=0,    help="0 = run forever")
-    p.add_argument("--use-claude",  action="store_true")
+    p.add_argument("--use-claude",          action="store_true",
+                   help="Enable legacy AI filter (consensus mode).")
+    p.add_argument("--use-claude-reviewer", action="store_true",
+                   help="Enable Claude signal reviewer in research mode (recommended).")
     p.add_argument("--ai-model",    default="claude-haiku-4-5-20251001")
     p.add_argument("--reset-paper", action="store_true")
     p.add_argument("--paper-balance", type=float, default=10000.0)
@@ -739,14 +870,43 @@ def run(args: argparse.Namespace) -> None:
     if not pairs:
         raise SystemExit("No tradable pairs remain after live Kraken validation.")
 
-    # AI filter (optional)
+    # AI filter — consensus mode only (legacy)
     ai_filter: Optional[AIFilter] = None
-    if args.use_claude and _HAS_CLAUDE:
+    if args.use_claude and _HAS_CLAUDE and args.strategy_mode == "consensus":
         try:
             ai_filter = AIFilter(model=args.ai_model)
             log(f"AI filter enabled ({args.ai_model})")
         except Exception as e:
             log(f"AI filter unavailable: {e}")
+
+    # Claude reviewer — research mode signal review before entry
+    claude_reviewer: Optional[ClaudeReviewer] = None
+    if args.use_claude_reviewer and _HAS_CLAUDE and args.strategy_mode == "research":
+        try:
+            claude_reviewer = ClaudeReviewer(model=args.ai_model)
+            log(f"Claude reviewer enabled ({args.ai_model})")
+        except Exception as e:
+            log(f"Claude reviewer unavailable: {e}")
+
+    # Roster manager — dynamic active roster for research mode
+    roster: Optional[rm.RosterManager] = None
+    if args.strategy_mode == "research":
+        roster = rm.RosterManager(max_pos=args.max_pos)
+        n_watchlist = roster.load_sweep_candidates()
+        if n_watchlist:
+            log(f"Roster manager: {n_watchlist} sweep candidates loaded into watchlist")
+            # Expand the tradable pair pool to include watchlist pairs
+            watchlist_pairs = [p for p in roster.watchlist if p not in pairs]
+            if watchlist_pairs:
+                extra, _ = validate_tradable_pairs(
+                    requested_pairs=watchlist_pairs,
+                    notional=args.notional,
+                    max_spread_pct=args.max_spread_pct,
+                )
+                pairs = pairs + [p for p in extra if p not in pairs]
+                log(f"Watchlist expanded tradable pool to {len(pairs)} pairs")
+        else:
+            log("Roster manager: no sweep candidates found — run pair_sweep.py first")
 
     if args.mode == "paper" and args.reset_paper:
         kraken.paper_init(balance=args.paper_balance)
@@ -755,15 +915,23 @@ def run(args: argparse.Namespace) -> None:
     # State
     open_positions: dict[str, OpenPosition] = {}   # pair → position
     cooldowns:      dict[str, int]           = {}   # pair → cycle cooldown expires
-    cycle = 0
+    cycle       = 0
+    last_bar_ts = 0   # tracks bar closes for roster rotation
 
     print(f"\n{'═'*65}")
     print(f"  UNIVERSE SCANNER | {args.mode.upper()} | {args.strategy_mode.upper()} | {len(pairs)} pairs | max {args.max_pos} positions")
     if args.strategy_mode == "research":
-        print(f"  Notional: ${args.notional:.0f}/trade | Pair-specific tuned exits from research registry")
+        print(
+            f"  Notional: ${args.notional:.0f}/trade | Pair-specific tuned exits from research registry"
+            f" | gate60>={rr.PORTFOLIO_REGIME_GATE['min_gate_trend_strength_60']:.3f}"
+            f" | atr>={rr.PORTFOLIO_REGIME_GATE['min_atr_pct']:.3f}"
+        )
     else:
         print(f"  Notional: ${args.notional:.0f}/trade | Stop: {STOP_PCT:.1%} | Target: {TARGET_PCT:.1%}")
-    print(f"  AI filter: {'ON' if ai_filter else 'OFF'} | Min score: {args.min_score}/5")
+    reviewer_label = "Claude reviewer ON" if claude_reviewer else ("AI filter ON" if ai_filter else "AI OFF")
+    print(f"  {reviewer_label} | Min score: {args.min_score}/5")
+    roster_label = f"Roster manager ON ({len(roster.watchlist)} watchlist)" if roster else "Roster manager OFF"
+    print(f"  {roster_label}")
     print(f"  P&L curve → {pnl_curve.log_path}")
     print(f"{'═'*65}\n")
 
@@ -779,7 +947,13 @@ def run(args: argparse.Namespace) -> None:
         max_spread_pct=args.max_spread_pct,
         tradable_pairs=pairs,
         rejected_pairs=rejected_pairs,
+        portfolio_regime_gate=rr.PORTFOLIO_REGIME_GATE if args.strategy_mode == "research" else None,
     )
+
+    # Load initial suppression state
+    _suppression_state = load_suppression_state()
+    log(f"Suppression: portfolio={_suppression_state.get('portfolio_state','normal')} "
+        f"blocked={len(suppressed_pairs(_suppression_state))}/{len(pairs)} pairs")
 
     while True:
         cycle += 1
@@ -788,6 +962,12 @@ def run(args: argparse.Namespace) -> None:
 
         ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
         log(f"── Cycle {cycle} | {ts_str} UTC | open={len(open_positions)}/{args.max_pos} ──")
+
+        # Refresh suppression state every cycle
+        _suppression_state = load_suppression_state()
+        _suppressed = suppressed_pairs(_suppression_state)
+        if _suppressed:
+            log(f"  Suppressed pairs (no new entries): {sorted(_suppressed)}")
 
         # ── 1. Update open positions with fresh prices ──────────────────────
         to_close: list[tuple[str, float, str]] = []
@@ -803,7 +983,7 @@ def run(args: argparse.Namespace) -> None:
             if reason is None and pos.bars_held >= TREND_EXIT_BARS:
                 if args.strategy_mode == "research":
                     raw_fresh = fetch_ohlc_raw(pair, interval=args.interval)
-                    plan = rr.plan_for_pair(pair)
+                    plan = (roster.get_plan(pair) if roster else None) or rr.plan_for_pair(pair)
                     if raw_fresh is not None and plan is not None:
                         signal_info = rr.detect_signal(raw_fresh, plan)
                         if signal_info is not None and rr.should_trend_exit(signal_info["frame"]):
@@ -846,57 +1026,159 @@ def run(args: argparse.Namespace) -> None:
 
         # ── 3. Scan for new entries if slots available ──────────────────────
         if len(open_positions) < args.max_pos:
-            candidates: list[tuple[str, int, list[str], pd.DataFrame]] = []
+            candidates: list[tuple[str, int, list[str], pd.DataFrame, dict]] = []
+            # gate_scores collected during scan — used by roster rotation below
+            cycle_gate_scores: dict[str, float] = {}
+            cycle_bar_ts = 0
 
             for pair in pairs:
                 if pair in open_positions:
                     continue
                 if cooldowns.get(pair, 0) >= cycle:
                     continue
+                if pair in _suppressed:
+                    log(f"  ⏸ {pair:<12} suppressed (state={_suppression_state['pairs'].get(pair,{}).get('state','?')})")
+                    continue
 
                 if args.strategy_mode == "research":
-                    plan = rr.plan_for_pair(pair)
+                    # Plan lookup: roster-aware (covers sweep-promoted pairs too)
+                    plan = roster.get_plan(pair) if roster else rr.plan_for_pair(pair)
                     if plan is None:
                         continue
                     raw_df = fetch_ohlc_raw(pair, interval=args.interval)
                     if raw_df is None:
                         continue
+
+                    # Track latest bar timestamp for roster rotation
+                    bar_ts_this = int(raw_df["ts"].iloc[-1])
+                    cycle_bar_ts = max(cycle_bar_ts, bar_ts_this)
+
                     signal_info = rr.detect_signal(raw_df, plan)
                     if signal_info is None:
                         continue
-                    score = int(round(float(signal_info["score"])))
+
+                    # Accumulate gate score for roster rotation
+                    g60 = signal_info["gate_trend_strength_60"]
+                    atr = signal_info["atr_pct"]
+                    cycle_gate_scores[pair] = g60 * atr
+
+                    score      = int(round(float(signal_info["score"])))
                     conditions = list(signal_info["conditions"])
+                    regime_state = (
+                        "weak"
+                        if bool(signal_info.get("weak_regime"))
+                        else (
+                            "trend"
+                            if bool(signal_info.get("trend_regime"))
+                            else ("ok" if signal_info["portfolio_regime_ok"] else "block")
+                        )
+                    )
+                    weak_score = int(signal_info.get("weak_regime_score", 0) or 0)
+                    weak_reasons = list(signal_info.get("weak_reasons", []))
                     log(
                         f"  📊 {pair:<12} plan={plan.construction}/{plan.entry_filter}/{plan.exit_profile} "
                         f"score={score} comps={signal_info['component_count']} "
+                        f"state={regime_state} weak={weak_score} g60={g60:.4f} atr={atr:.4f} "
                         f"conds=[{', '.join(conditions) if conditions else 'none'}]"
                     )
+                    if bool(signal_info["signal_pre_regime"]) and not bool(signal_info["signal"]):
+                        emit(
+                            "weak_regime_block" if bool(signal_info.get("weak_regime")) else "regime_gate_block",
+                            pair=pair,
+                            construction=plan.construction,
+                            entry_filter=plan.entry_filter,
+                            exit_profile=plan.exit_profile,
+                            score=score,
+                            gate_trend_strength_60=g60,
+                            atr_pct=atr,
+                            weak_regime=bool(signal_info.get("weak_regime")),
+                            weak_regime_score=weak_score,
+                            weak_reasons=weak_reasons,
+                            threshold=rr.PORTFOLIO_REGIME_GATE,
+                        )
                     if bool(signal_info["signal"]):
-                        candidates.append((pair, score, conditions, signal_info["frame"]))
+                        candidates.append((pair, score, conditions,
+                                           signal_info["frame"], signal_info))
                 else:
                     df = fetch_ohlc_df(pair, interval=args.interval)
                     if df is None:
                         continue
 
                     score, conditions = score_signal(df)
-                    # Use per-pair threshold if defined, else global --min-score
                     pair_threshold = PAIR_MIN_VOTES.get(pair, args.min_score)
-                    log(f"  📊 {pair:<12} score={score}/{pair_threshold} signals=[{', '.join(conditions) if conditions else 'none'}]")
+                    log(f"  📊 {pair:<12} score={score}/{pair_threshold} "
+                        f"signals=[{', '.join(conditions) if conditions else 'none'}]")
                     if score >= pair_threshold:
-                        candidates.append((pair, score, conditions, df))
+                        candidates.append((pair, score, conditions, df, {}))
 
-            # Sort by score descending — take best signals first
+            # ── 3a. Roster rotation on bar close (research mode only) ─────────
+            if roster is not None and cycle_bar_ts > last_bar_ts:
+                # Also fetch gate scores for watchlist pairs not already scanned
+                for wl_pair in roster.watchlist:
+                    if wl_pair not in cycle_gate_scores:
+                        wl_df = fetch_ohlc_raw(wl_pair, interval=args.interval)
+                        if wl_df is not None:
+                            cycle_gate_scores[wl_pair] = rm.RosterManager.compute_gate_score(wl_df)
+
+                new_active, rotation_log = roster.maybe_rotate(cycle_gate_scores, cycle_bar_ts)
+                for msg in rotation_log:
+                    log(f"  🔄 {msg}")
+                    emit("roster_rotation", message=msg, bar_ts=cycle_bar_ts,
+                         gate_scores=cycle_gate_scores)
+
+                last_bar_ts = cycle_bar_ts
+
+            # Sort by score descending — best signals first
             candidates.sort(key=lambda x: x[1], reverse=True)
 
-            for pair, score, conditions, df in candidates:
+            for pair, score, conditions, df, signal_info in candidates:
                 if len(open_positions) >= args.max_pos:
                     break
 
-                plan = rr.plan_for_pair(pair) if args.strategy_mode == "research" else None
+                plan = (
+                    (roster.get_plan(pair) if roster else None)
+                    or rr.plan_for_pair(pair)
+                ) if args.strategy_mode == "research" else None
                 price = float(df["close"].iloc[-1])
 
-                # AI filter (optional)
-                if ai_filter is not None:
+                # Claude reviewer (research mode, optional) — runs only on gated candidates
+                if claude_reviewer is not None and plan is not None and signal_info:
+                    approved, reason, confidence = claude_reviewer.review(
+                        pair=pair,
+                        plan=plan,
+                        signal_info=signal_info,
+                        open_positions=open_positions,
+                        max_pos=args.max_pos,
+                    )
+                    emit("claude_review", pair=pair, approved=approved,
+                         reason=reason, confidence=confidence,
+                         construction=plan.construction, score=score)
+                    if not approved:
+                        log(f"  ✗ CLAUDE VETO {pair:<10} reason='{reason}' "
+                            f"conf={confidence:.2f}")
+                        continue
+                    log(f"  ✓ CLAUDE OK   {pair:<10} reason='{reason}' "
+                        f"conf={confidence:.2f}")
+
+                # L2 order book gate (research mode, live market check)
+                if args.strategy_mode == "research" and args.mode in ("paper", "live"):
+                    try:
+                        raw_ob = kraken.fetch_orderbook(pair)
+                        l2 = strat.compute_orderbook_features(raw_ob)
+                        l2_ok, l2_reason = rr.check_l2_entry_gate(l2)
+                        emit("l2_gate", pair=pair, approved=l2_ok, reason=l2_reason,
+                             obi=l2["obi"], weighted_obi=l2["weighted_obi"],
+                             spread_pct=l2["spread_pct"], depth_ratio=l2["depth_ratio"])
+                        if not l2_ok:
+                            log(f"  ✗ L2 GATE {pair:<10} {l2_reason}")
+                            continue
+                        log(f"  ✓ L2 OK   {pair:<10} {l2_reason}")
+                    except Exception as l2_exc:
+                        # Fail open — if orderbook fetch fails don't block the trade
+                        log(f"  ~ L2 gate skipped {pair}: {l2_exc}")
+
+                # Legacy AI filter (consensus mode)
+                elif ai_filter is not None:
                     approved = ai_filter.approve(pair, score, conditions, df)
                     if not approved:
                         log(f"  ✗ AI SKIP {pair} score={score}")
@@ -904,7 +1186,10 @@ def run(args: argparse.Namespace) -> None:
                         continue
 
                 # Size
-                size = args.notional / price
+                pair_notional = args.notional * float(
+                    _suppression_state.get("pairs", {}).get(pair, {}).get("notional_multiplier", 1.0)
+                )
+                size = pair_notional / price
 
                 # Place order
                 order_id = None
@@ -921,7 +1206,7 @@ def run(args: argparse.Namespace) -> None:
                     pair         = pair,
                     entry_price  = price,
                     size         = size,
-                    notional_usd = args.notional,
+                    notional_usd = pair_notional,
                     entry_bar    = cycle,
                     entry_ts     = time.time(),
                     stop_price   = price * (1 - STOP_PCT),
@@ -951,7 +1236,7 @@ def run(args: argparse.Namespace) -> None:
                         f"conds={conditions} "
                         f"price={price:.5g} stop={pos.stop_price:.5g}")
                 emit("trade_opened", pair=pair, score=score, conditions=conditions,
-                     price=price, notional=args.notional, order_id=order_id,
+                     price=price, notional=pair_notional, order_id=order_id,
                      construction=pos.construction, entry_filter=pos.entry_filter,
                      exit_profile=pos.exit_profile)
 
