@@ -160,10 +160,17 @@ def compute_and_write(
     """
     # Load previous state for persistence
     prev_pairs: dict[str, Any] = {}
+    port_bars_above_off  = 0
+    port_bars_below_off  = 0
+    prev_portfolio_state = "normal"
     if prev_state_path.exists():
         try:
             prev = json.loads(prev_state_path.read_text(encoding="utf-8"))
             prev_pairs = prev.get("pairs", {})
+            prev_port_meta = prev.get("portfolio_meta", {})
+            port_bars_above_off  = int(prev_port_meta.get("bars_above_off_threshold", 0))
+            port_bars_below_off  = int(prev_port_meta.get("bars_below_off_threshold", 0))
+            prev_portfolio_state = str(prev_port_meta.get("portfolio_state", "normal"))
         except Exception:
             pass
 
@@ -212,21 +219,42 @@ def compute_and_write(
         state_info["reason_tags"] = rr.weak_regime_reason_tags(last_row)
         pair_states[pair] = state_info
 
-    # Portfolio-level state
+    # Portfolio-level state with OFF_ENTER_BARS / OFF_EXIT_BARS persistence
     portfolio_state = "normal"
     if portfolio_scores:
         port_score   = float(np.mean(portfolio_scores))
         port_gate    = float(np.mean(portfolio_gate_shares))
         port_density = float(np.mean(portfolio_signal_densities))
 
-        if (
+        off_conditions_met = (
             port_score   >= PORTFOLIO_OFF_WEAK_SCORE
             and port_gate    <= PORTFOLIO_OFF_GATE_SHARE
             and port_density <= PORTFOLIO_OFF_SIGNAL_DENSITY
-        ):
-            portfolio_state = "off"
-        elif port_score >= 0.60:
+        )
+
+        # Update persistence counters
+        if off_conditions_met:
+            port_bars_above_off += 1
+            port_bars_below_off  = 0
+        else:
+            port_bars_below_off += 1
+            port_bars_above_off  = 0
+
+        if prev_portfolio_state == "off":
+            # off → weak_defensive requires OFF_EXIT_BARS consecutive bars below threshold
+            if port_bars_below_off >= OFF_EXIT_BARS:
+                portfolio_state = "weak_defensive"
+            else:
+                portfolio_state = "off"
+        elif port_score >= 0.60 or prev_portfolio_state == "weak_defensive":
             portfolio_state = "weak_defensive"
+            # Escalate to off if conditions persist for OFF_ENTER_BARS
+            if port_bars_above_off >= OFF_ENTER_BARS:
+                portfolio_state = "off"
+        # else: portfolio_state stays "normal"
+    else:
+        port_bars_above_off = 0
+        port_bars_below_off = 0
 
     # Propagate "off" to all pairs
     if portfolio_state == "off":
@@ -244,6 +272,11 @@ def compute_and_write(
         "source_run_id":  run_id,
         "bar_ts":         run_ts,
         "portfolio_state": portfolio_state,
+        "portfolio_meta": {
+            "portfolio_state":          portfolio_state,
+            "bars_above_off_threshold": port_bars_above_off,
+            "bars_below_off_threshold": port_bars_below_off,
+        },
         "pairs":          pair_states,
     }
 
