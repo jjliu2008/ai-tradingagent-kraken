@@ -75,7 +75,6 @@ def build_diff(
         pair = candidate["pair"]
         construction = candidate["construction"]
         cluster_id = construction.split("_")[0]
-        cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
 
         current = current_registry.get(pair, {})
         if current.get("status") in ("active", "active_experimental", "active_frozen"):
@@ -86,6 +85,7 @@ def build_diff(
         blocked_corr, reason_corr = check_correlation_gate(candidate.get("max_signal_correlation", 0.0))
         blocked_rob,  reason_rob  = check_robustness_gate(candidate["robustness_score"])
         blocked_cluster = cluster_counts.get(cluster_id, 0) >= _CLUSTER_PROMOTE_LIMIT
+        cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
 
         any_blocked = blocked_conc or blocked_corr or blocked_rob or blocked_cluster
         block_reasons = [r for r in [reason_conc, reason_corr, reason_rob] if r]
