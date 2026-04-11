@@ -157,15 +157,9 @@ def run_portfolio_backtest(
 
     recent_30_start = max_ts - 30 * 24 * 60 * 60 if max_ts else 0
     recent_14_start = max_ts - 14 * 24 * 60 * 60 if max_ts else 0
-    split_ts        = max_ts - 60 * 24 * 60 * 60 if max_ts else 0
-    older60_trades:  list = []
-    recent60_trades: list = []
+    split_ts = max_ts - 60 * 24 * 60 * 60 if max_ts else 0  # 0 when no data; all trades land in recent60
 
     for trade in all_trades:
-        if trade.entry_ts < split_ts:
-            older60_trades.append(trade)
-        else:
-            recent60_trades.append(trade)
         if trade.entry_ts >= recent_30_start:
             recent_30_trades.append(trade)
         if trade.entry_ts >= recent_14_start:
@@ -200,8 +194,21 @@ def run_portfolio_backtest(
         "recent30": _summarize(recent_30_trades),
         "recent14": _summarize(recent_14_trades),
         "split_ts": int(split_ts),
-        "older60": _summarize(older60_trades),
-        "recent60": _summarize(recent60_trades),
+    }
+    split_summary = _summarize_with_split(all_trades, split_ts)
+    summary["older60"] = {
+        "trades":        split_summary["older60_trades"],
+        "net_pct":       split_summary["older60_net_pct"],
+        "win_rate":      split_summary["older60_win_rate"],
+        "avg_trade_pct": split_summary["older60_avg_trade_pct"],
+        "max_dd_pct":    split_summary["older60_max_dd_pct"],
+    }
+    summary["recent60"] = {
+        "trades":        split_summary["recent60_trades"],
+        "net_pct":       split_summary["recent60_net_pct"],
+        "win_rate":      split_summary["recent60_win_rate"],
+        "avg_trade_pct": split_summary["recent60_avg_trade_pct"],
+        "max_dd_pct":    split_summary["recent60_max_dd_pct"],
     }
     return pair_frame, summary
 
