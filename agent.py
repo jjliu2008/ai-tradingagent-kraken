@@ -18,6 +18,7 @@ import erc8004_integration as erc8004
 import kraken_client as kraken
 import risk_guardrails as risk
 import strategy as strat
+import suppression_state as ss
 
 load_dotenv()
 
@@ -443,6 +444,26 @@ def cancel_pending_order(mode: str, order_id: str) -> dict:
     return kraken.order_cancel(order_id)
 
 
+# ---------------------------------------------------------------------------
+# Suppression state helpers
+# ---------------------------------------------------------------------------
+
+def load_suppression_state() -> dict:
+    """Load current suppression state. Returns safe defaults if file is missing."""
+    return ss.load_state()
+
+
+def suppressed_pairs(state: dict) -> set:
+    """Return set of pair names that must not receive new entries."""
+    if state.get("portfolio_state") == "off":
+        return set(state.get("pairs", {}).keys())
+    return {
+        pair
+        for pair, info in state.get("pairs", {}).items()
+        if not info.get("allow_new_entries", True)
+    }
+
+
 def build_config(args: argparse.Namespace) -> strat.StrategyConfig:
     return strat.StrategyConfig(
         breakout_window=args.breakout_window,
@@ -861,9 +882,22 @@ def run(
     emit_erc8004_status_event(event_log_path)
     persist_state()
 
+    # Load initial suppression state
+    _suppression_state = load_suppression_state()
+    print(
+        f" Suppression: portfolio={_suppression_state.get('portfolio_state', 'normal')} "
+        f"blocked={len(suppressed_pairs(_suppression_state))}/{len(trade_pairs)} pairs"
+    )
+
     while True:
         cycle += 1
         try:
+            # Refresh suppression state every cycle
+            _suppression_state = load_suppression_state()
+            _suppressed = suppressed_pairs(_suppression_state)
+            if _suppressed:
+                print(f"  Suppressed pairs (no new entries): {sorted(_suppressed)}")
+
             portfolio = kraken.paper_status() if mode == "paper" else {}
             fee_hurdle_pct = 2 * (float(portfolio.get("fee_rate", fee_pct)) + slippage_pct)
             now_ts = int(time.time())
@@ -885,7 +919,8 @@ def run(
                 if len(df_raw) <= 1:
                     continue
                 df = strat.compute_features(df_raw.iloc[:-1].reset_index(drop=True), config=config)
-                obi, spread_pct = strat.compute_orderbook_features(raw_ob)
+                l2 = strat.compute_orderbook_features(raw_ob)
+                obi, spread_pct = l2["obi"], l2["spread_pct"]
                 best_quotes[pair] = _extract_best_bid_ask(raw_ob)
                 live_price = _extract_ticker_price(raw_ticker, float(df.iloc[-1]["close"]))
                 pair_frames[pair] = df
@@ -1442,6 +1477,23 @@ def run(
                             )
                             candidate_rejections.append("pending_order_exists")
                             continue
+                        if pair in _suppressed:
+                            print(
+                                f"  SUPPRESSED {pair} | "
+                                f"state={_suppression_state.get('pairs', {}).get(pair, {}).get('state', '?')} "
+                                f"| no new entries"
+                            )
+                            append_event(
+                                event_log_path,
+                                "candidate_rejected",
+                                cycle=cycle,
+                                pair=pair,
+                                reason="suppressed",
+                                summary="pair suppressed by suppression_state; no new entries allowed",
+                                signal=build_signal_snapshot(signal),
+                            )
+                            candidate_rejections.append("suppressed")
+                            continue
                         pair_snapshot = pair_contexts[pair]
                         decision = default_decision()
                         if client is not None:
@@ -1558,7 +1610,11 @@ def run(
                             continue
 
                         effective_size_mult = min(decision.size_mult, guardrail.approved_size_mult)
-                        size = compute_order_size(signal.price, notional_usd * effective_size_mult)
+                        notional_multiplier = float(
+                            _suppression_state.get("pairs", {}).get(pair, {}).get("notional_multiplier", 1.0)
+                        )
+                        pair_notional = notional_usd * effective_size_mult * notional_multiplier
+                        size = compute_order_size(signal.price, pair_notional)
                         if size <= 0:
                             print(f"  SKIP {pair} | invalid order size")
                             append_event(
