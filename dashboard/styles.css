@@ -171,6 +171,10 @@ body {
   grid-column: span 6;
 }
 
+.identity-panel {
+  grid-column: span 12;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -453,6 +457,57 @@ body {
   overflow: auto;
 }
 
+.identity-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1.4fr;
+  gap: 18px;
+}
+
+.identity-card {
+  border-radius: 18px;
+  border: 1px solid rgba(19, 35, 35, 0.06);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(245, 239, 228, 0.9));
+  padding: 18px;
+}
+
+.identity-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(19, 35, 35, 0.08);
+}
+
+.identity-kv:last-child {
+  border-bottom: 0;
+}
+
+.identity-kv span {
+  color: var(--muted);
+}
+
+.mini-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mini-item {
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(19, 35, 35, 0.04);
+  font-size: 0.88rem;
+}
+
+.mini-item strong {
+  display: block;
+  margin-bottom: 5px;
+}
+
+.list-block h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+}
+
 .event-item {
   display: grid;
   grid-template-columns: 130px 120px 1fr;
@@ -495,7 +550,8 @@ body {
   }
 
   .metric-grid,
-  .spotlight-grid {
+  .spotlight-grid,
+  .identity-grid {
     grid-template-columns: 1fr;
   }
 

@@ -34,7 +34,13 @@ function formatNumber(value, digits = 2) {
 
 function formatTime(value) {
   if (!value) return "-";
-  const date = new Date(value);
+  const normalized =
+    typeof value === "number" || /^\d+$/.test(String(value))
+      ? Number(value) < 1e12
+        ? Number(value) * 1000
+        : Number(value)
+      : value;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString([], {
     month: "short",
@@ -253,7 +259,52 @@ function renderEvents(items) {
     .join("");
 }
 
-function renderStatus(status, monitoring, risk, decisions, trades, events, history) {
+function renderIdentity(identity) {
+  const status = identity?.status || {};
+  const intents = identity?.recent_intents || [];
+  const feedback = identity?.recent_feedback || [];
+
+  setText("identity-status", status.enabled ? (status.agent_id ? "Registered" : "Configured") : "Unconfigured");
+  setText("identity-agent-id", status.agent_id != null ? String(status.agent_id) : "-");
+  setText("identity-wallet", status.wallet_address || "-");
+  setText("identity-registry", status.identity_registry || "-");
+
+  setHtml(
+    "identity-intents",
+    intents.length
+      ? intents
+          .map(
+            (item) => `
+              <div class="mini-item">
+                <strong>${item.pair || "-"} intent</strong>
+                <div class="subnote">${formatTime(item.ts)} | ${item.intent?.side || "buy"} ${item.intent?.size || "-"} @ ${item.intent?.price || "-"}</div>
+                <div class="mono">${item.signature ? `${item.signature.slice(0, 16)}...` : item.reason || "not signed"}</div>
+              </div>
+            `
+          )
+          .join("")
+      : `<div class="empty-state">No signed intents yet.</div>`
+  );
+
+  setHtml(
+    "identity-feedback",
+    feedback.length
+      ? feedback
+          .map(
+            (item) => `
+              <div class="mini-item">
+                <strong>${slugLabel(item.tag1 || "feedback")} / ${slugLabel(item.tag2 || "")}</strong>
+                <div class="subnote">${item.tx_hash ? item.tx_hash.slice(0, 18) + "..." : item.reason || "not posted"}</div>
+                <div>${item.posted ? "Posted on Base Sepolia" : slugLabel(item.reason || "Skipped")}</div>
+              </div>
+            `
+          )
+          .join("")
+      : `<div class="empty-state">No feedback posts yet.</div>`
+  );
+}
+
+function renderStatus(status, monitoring, risk, decisions, trades, events, history, identity) {
   setText("agent-mode", `${String(status.mode || "paper").toUpperCase()} MODE`);
   setText(
     "agent-construction",
@@ -321,11 +372,12 @@ function renderStatus(status, monitoring, risk, decisions, trades, events, histo
   }));
   renderTrades([...liveTrades, ...historicalTrades]);
   renderEvents(events.items || []);
+  renderIdentity(identity);
 }
 
 async function refresh() {
   try {
-    const [status, monitoring, risk, decisions, trades, events, history] = await Promise.all([
+    const [status, monitoring, risk, decisions, trades, events, history, identity] = await Promise.all([
       fetchJson("/status"),
       fetchJson("/monitoring"),
       fetchJson("/risk"),
@@ -333,8 +385,9 @@ async function refresh() {
       fetchJson("/trades?limit=8"),
       fetchJson("/events?limit=12"),
       fetchJson("/history"),
+      fetchJson("/identity?limit=4"),
     ]);
-    renderStatus(status, monitoring, risk, decisions, trades, events, history);
+    renderStatus(status, monitoring, risk, decisions, trades, events, history, identity);
   } catch (error) {
     setText("agent-mode", "API OFFLINE");
     setText("no-trade-summary", `Dashboard could not load data: ${error.message}`);

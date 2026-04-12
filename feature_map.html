@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Kraken Agent — Feature Pipeline Map</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    padding: 32px 24px;
+    min-width: 1300px;
+  }
+  h1 { font-size: 22px; color: #f0f6fc; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #8b949e; margin-bottom: 36px; }
+
+  /* Layer wrapper */
+  .layer { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+  .layer-label {
+    width: 120px; min-width: 120px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: #8b949e; padding-top: 8px; text-align: right;
+  }
+  .layer-body { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
+
+  /* Arrow row */
+  .arrow-row { display: flex; align-items: center; margin-bottom: 8px; margin-left: 132px; }
+  .arrow { color: #30363d; font-size: 18px; width: 100%; text-align: center; }
+
+  /* Feature box */
+  .box {
+    border-radius: 6px; padding: 8px 12px; font-size: 12px;
+    border: 1px solid transparent; line-height: 1.5;
+    position: relative;
+  }
+  .box .name { font-weight: 700; font-size: 12px; margin-bottom: 2px; }
+  .box .formula { font-family: 'Cascadia Code', 'Fira Code', monospace;
+                  font-size: 10.5px; color: #8b949e; }
+  .box .desc { font-size: 11px; color: #8b949e; margin-top: 3px; }
+  .box .badge {
+    position: absolute; top: -7px; right: 6px;
+    font-size: 9px; font-weight: 700; padding: 1px 5px;
+    border-radius: 10px; background: #238636; color: #fff;
+  }
+  .badge.new { background: #1f6feb; }
+  .badge.live { background: #9e6a03; }
+  .badge.fixed { background: #6e40c9; }
+
+  /* Color themes by category */
+  .blue   { background:#0d2440; border-color:#1f6feb; }
+  .orange { background:#271d0a; border-color:#d29922; }
+  .purple { background:#21134d; border-color:#8957e5; }
+  .green  { background:#0a2d1d; border-color:#238636; }
+  .teal   { background:#0a2326; border-color:#1b7c83; }
+  .red    { background:#2d0d0d; border-color:#f85149; }
+  .gold   { background:#29200a; border-color:#e3b341; }
+  .gray   { background:#161b22; border-color:#30363d; }
+  .pink   { background:#2d1432; border-color:#bc4bec; }
+
+  /* Connector */
+  .connector {
+    width: 100%; border-top: 1px dashed #21262d;
+    margin: 6px 0 6px 132px; width: calc(100% - 132px);
+  }
+
+  /* Legend */
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 36px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .legend-swatch { width: 12px; height: 12px; border-radius: 2px; }
+
+  /* Separator between major sections */
+  .section-sep {
+    margin: 20px 0 20px 132px;
+    border-top: 2px solid #21262d;
+    width: calc(100% - 132px);
+  }
+
+  /* Gate highlight */
+  .gate-box {
+    border-radius: 6px; padding: 10px 16px;
+    background: #1a1104; border: 2px solid #e3b341;
+    font-size: 12px; line-height: 1.6;
+  }
+  .gate-box .name { font-weight: 700; color: #e3b341; margin-bottom: 4px; }
+  .gate-box .formula { font-family: monospace; font-size: 11px; color: #c9d1d9; }
+  .gate-box .sub { font-size: 11px; color: #8b949e; }
+
+  /* Two-column table inside box */
+  table.metrics { border-collapse: collapse; width: 100%; margin-top: 4px; }
+  table.metrics td { padding: 1px 6px 1px 0; font-size: 11px; vertical-align: top; }
+  table.metrics .k { color: #8b949e; width: 55%; }
+  table.metrics .v { color: #e6edf3; font-family: monospace; }
+
+  .note { font-size: 11px; color: #6e7681; margin-top: 4px; font-style: italic; }
+
+  /* Horizontal divider with label */
+  .hdiv {
+    margin: 20px 0 16px 0;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .hdiv-line { flex: 1; border-top: 1px solid #21262d; }
+  .hdiv-label { font-size: 11px; font-weight: 700; color: #6e7681;
+                text-transform: uppercase; letter-spacing: 0.1em; }
+
+  /* Result panel */
+  .result-panel {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 16px 20px; margin-top: 36px;
+  }
+  .result-panel h2 { font-size: 15px; color: #f0f6fc; margin-bottom: 12px; }
+  .result-row { display: flex; gap: 32px; flex-wrap: wrap; }
+  .result-col { flex: 1; min-width: 200px; }
+  .result-col h3 { font-size: 12px; color: #8b949e; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat { display: flex; justify-content: space-between; padding: 3px 0;
+          border-bottom: 1px solid #21262d; font-size: 12px; }
+  .stat .k { color: #8b949e; }
+  .stat .v { font-weight: 600; font-family: monospace; }
+  .pos { color: #3fb950; }
+  .neg { color: #f85149; }
+  .neu { color: #f0f6fc; }
+  .warn { color: #e3b341; }
+</style>
+</head>
+<body>
+
+<h1>Kraken AI Trading Agent — Feature Pipeline</h1>
+<p class="subtitle">Full data flow from raw OHLCV bars to trade execution · Math-verified · L2 microstructure layer added</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 0 · Raw Inputs</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">Data Sources</div>
+  <div class="layer-body">
+    <div class="box blue" style="min-width:280px">
+      <div class="name">15m OHLCV Bars (Master)</div>
+      <div class="formula">ts, open, high, low, close, vwap_k, volume, count</div>
+      <div class="desc">Trade-aggregated from Kraken REST API.<br>
+        <b>vwap_k</b> = Σ(price·vol) / Σvol per bar (true TWAP).<br>
+        <b>count</b> = number of individual trades in bar.</div>
+    </div>
+    <div class="box orange" style="min-width:200px">
+      <div class="name">30m Resampled Bars</div>
+      <div class="formula">resample_ohlcv(df, 30)</div>
+      <div class="desc">Open=first, High=max, Low=min,<br>
+        Close=last, Vol=sum, vwap_k=Σpv/Σvol<br>
+        label="left", closed="left"</div>
+    </div>
+    <div class="box orange" style="min-width:200px">
+      <div class="name">60m Resampled Bars</div>
+      <div class="formula">resample_ohlcv(df, 60)</div>
+      <div class="desc">Same aggregation. Provides trend<br>gate and higher-TF signal components.<br>
+        Each bar covers a 60-minute window.</div>
+    </div>
+    <div class="box gold" style="min-width:220px">
+      <span class="badge live">LIVE ONLY</span>
+      <div class="name">L2 Order Book</div>
+      <div class="formula">kraken.fetch_orderbook(pair)</div>
+      <div class="desc">Top-10 bid/ask price+size levels.<br>
+        Fetched fresh before every entry decision.<br>
+        Not available for historical backtest.</div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 1 · Feature Computation (compute_features, per timeframe)</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">Trend / Price</div>
+  <div class="layer-body">
+    <div class="box blue">
+      <div class="name">ema_fast / ema_slow</div>
+      <div class="formula">EMA(close, span=8) / EMA(close, span=21)</div>
+    </div>
+    <div class="box blue">
+      <div class="name">trend_strength</div>
+      <div class="formula">(ema_fast − ema_slow) / ema_slow</div>
+      <div class="desc">Positive = uptrend. Used in gate and tc15.</div>
+    </div>
+    <div class="box blue">
+      <div class="name">momentum_1/3/6/12</div>
+      <div class="formula">close.pct_change(n)</div>
+      <div class="desc">1, 3, 6, 12 bar returns.</div>
+    </div>
+    <div class="box blue">
+      <div class="name">breakout_level</div>
+      <div class="formula">high.rolling(12).max().shift(1)</div>
+      <div class="desc">12-bar high, uses prior bars only.</div>
+    </div>
+    <div class="box blue">
+      <div class="name">reclaim_pct / breakout_pct</div>
+      <div class="formula">(close − trigger_level) / trigger_level<br>(close − breakout_level) / breakout_level</div>
+      <div class="desc">trigger = 2-bar max of high.</div>
+    </div>
+    <div class="box blue">
+      <div class="name">macd_hist</div>
+      <div class="formula">EMA(close,12)−EMA(close,26) − EMA(macd,9)</div>
+      <div class="desc">Used in tc15 & tc30 conditions.</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">Volatility</div>
+  <div class="layer-body">
+    <div class="box orange">
+      <div class="name">true_range</div>
+      <div class="formula">max(H−L, |H−prev_C|, |L−prev_C|)</div>
+    </div>
+    <div class="box orange">
+      <div class="name">atr / atr_pct</div>
+      <div class="formula">SMA(true_range, 14) / close</div>
+      <div class="desc">Gate requires atr_pct ≥ 0.006.</div>
+    </div>
+    <div class="box orange">
+      <div class="name">compression_ratio</div>
+      <div class="formula">SMA(TR, 6) / SMA(TR, 24)</div>
+      <div class="desc">&lt;0.85 = volatility compression<br>(coiling before move).</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">Volume</div>
+  <div class="layer-body">
+    <div class="box purple">
+      <div class="name">volume_ma</div>
+      <div class="formula">volume.rolling(20).mean().shift(1)</div>
+      <div class="desc">Lagged — no lookahead.</div>
+    </div>
+    <div class="box purple">
+      <div class="name">volume_ratio</div>
+      <div class="formula">volume / volume_ma</div>
+      <div class="desc">&gt;1.0 = above-avg activity.</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">VWAP <span class="badge fixed" style="position:relative;top:0;right:0;margin-left:4px">FIXED</span></div>
+  <div class="layer-body">
+    <div class="box teal">
+      <div class="name">session_vwap</div>
+      <div class="formula">cumsum(vwap_k · vol) / cumsum(vol)</div>
+      <div class="desc">Resets at UTC midnight. Uses <b>vwap_k</b><br>
+        (true TWAP per bar), not close·vol.<br>
+        <i>Fixed: was using close × volume.</i></div>
+    </div>
+    <div class="box teal">
+      <div class="name">distance_from_vwap</div>
+      <div class="formula">(close − session_vwap) / session_vwap</div>
+      <div class="desc">Filter: ≤ 0.03 (within 3% of VWAP).</div>
+    </div>
+    <div class="box teal">
+      <div class="name">close_location</div>
+      <div class="formula">(close − low) / (high − low)</div>
+      <div class="desc">0=bar low, 1=bar high.<br>Core signal quality gate.</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">Bar Structure <span class="badge new" style="position:relative;top:0;right:0;margin-left:4px">NEW</span></div>
+  <div class="layer-body">
+    <div class="box green">
+      <div class="name">body_ratio</div>
+      <div class="formula">|close − open| / (high − low)</div>
+      <div class="desc">0 = doji, 1 = full-body candle.<br>
+        Filters out indecision bars.</div>
+    </div>
+    <div class="box green">
+      <div class="name">upper_wick / lower_wick</div>
+      <div class="formula">upper = (high − max(O,C)) / range<br>lower = (min(O,C) − low) / range</div>
+      <div class="desc">Fraction of bar range above/below body.</div>
+    </div>
+    <div class="box green">
+      <div class="name">wick_imbalance</div>
+      <div class="formula">lower_wick − upper_wick</div>
+      <div class="desc"><b>&gt;0</b> = buying pressure (L2 proxy).<br>
+        &gt;0.10 = clear buyer dominance.</div>
+    </div>
+    <div class="box green">
+      <div class="name">micro_pressure</div>
+      <div class="formula">(close − bar_mid) / range<br>bar_mid = (high+low)/2</div>
+      <div class="desc">+0.5 = close at bar top.<br>
+        Proxy for bid-side strength.</div>
+    </div>
+    <div class="box green">
+      <div class="name">trade_density_ratio</div>
+      <div class="formula">count / SMA(count, 20).shift(1)</div>
+      <div class="desc">High = many small trades (retail).<br>
+        Low = fewer large trades (institutional).</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">L2 Book <span class="badge live" style="position:relative;top:0;right:0;margin-left:4px">LIVE</span></div>
+  <div class="layer-body">
+    <div class="box gold">
+      <div class="name">obi (Order Book Imbalance)</div>
+      <div class="formula">bid_vol_top5 / (bid_vol + ask_vol)</div>
+      <div class="desc">Gate: ≥ 0.45 (not bearish-dominated).</div>
+    </div>
+    <div class="box gold">
+      <div class="name">weighted_obi</div>
+      <div class="formula">Σ(bid_size_i / rank_i) / total_weighted</div>
+      <div class="desc">Inverse-rank weighted across 10 levels.<br>Gate: ≥ 0.44.</div>
+    </div>
+    <div class="box gold">
+      <div class="name">spread_pct</div>
+      <div class="formula">(best_ask − best_bid) / mid</div>
+      <div class="desc">Gate: ≤ 0.50% (liquid market).</div>
+    </div>
+    <div class="box gold">
+      <div class="name">depth_ratio</div>
+      <div class="formula">bid_depth_1pct / ask_depth_1pct</div>
+      <div class="desc">Volume within 1% of mid price.<br>Gate: ≥ 0.60.</div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 2 · Signal Components (per bar True/False, multi-timeframe)</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">15m Components</div>
+  <div class="layer-body">
+    <div class="box red" style="min-width:260px">
+      <div class="name">tc15 · Trend Compression 15m</div>
+      <div class="formula">trend_strength &gt; 0.0025<br>
+macd_hist &gt; 0 AND rising<br>
+compression_ratio &lt; 0.85<br>
+volume_ratio &gt; 1.1<br>
+close_location &gt; 0.65<br>
+close &gt; roll_high_12</div>
+      <div class="desc">All 6 conditions must be true simultaneously.</div>
+    </div>
+    <div class="box red" style="min-width:240px">
+      <div class="name">signal_micro · Bar Pressure</div>
+      <span class="badge new">NEW</span>
+      <div class="formula">wick_imbalance &gt; 0.10<br>
+body_ratio &gt; 0.25<br>
+micro_pressure &gt; 0.15<br>
+ema_fast &gt; ema_slow</div>
+      <div class="desc">OHLCV-derived L2 proxy. Requires<br>
+        visible buying pressure in bar structure.</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">30m Components <span style="font-size:9px">(mapped to 15m)</span></div>
+  <div class="layer-body">
+    <div class="box red" style="min-width:210px">
+      <div class="name">tc30 · Trend Compression 30m</div>
+      <div class="formula">same as tc15 adapted for 30m bars</div>
+      <div class="desc">Mapped to first master bar after<br>
+        30m bar closes. <span style="color:#8957e5">Fixed: was 1 bar early.</span></div>
+    </div>
+    <div class="box red" style="min-width:210px">
+      <div class="name">atr30 · ATR Momentum 30m</div>
+      <div class="formula">compression_ratio &lt; 0.75<br>
+close &gt; roll_high_12<br>
+momentum_medium &gt; 1.0%<br>
+volume_ratio &gt; 1.0</div>
+    </div>
+    <div class="box red" style="min-width:210px">
+      <div class="name">mbt30 · Momentum Break 30m</div>
+      <div class="formula">trend_strength &gt; 0.0025<br>
+momentum_medium &gt; 2.0%<br>
+volume_ratio &gt; 1.2<br>close_location &gt; 0.70</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">60m Components <span style="font-size:9px">(mapped to 15m)</span></div>
+  <div class="layer-body">
+    <div class="box red" style="min-width:230px">
+      <div class="name">mb60 · Momentum Break 60m</div>
+      <div class="formula">trend_strength &gt; 0.0020<br>
+close &gt; roll_high_12<br>
+momentum_medium &gt; 1.5%<br>
+volume_ratio &gt; 1.0<br>
+close_location &gt; 0.70<br>
+compression_ratio &lt; 0.90</div>
+    </div>
+    <div class="box red" style="min-width:230px">
+      <div class="name">vst60 · Volume Spike 60m</div>
+      <div class="formula">volume_ratio &gt; 2.0<br>
+close &gt; open<br>
+close_location &gt; 0.70<br>
+trend_strength &gt; 0.0015<br>
+(close−open)/open &gt; 0.5%</div>
+      <div class="desc">Strong single-bar impulse on 60m.</div>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="margin-left:132px; margin-bottom:8px">
+  ⚠ Timing fix: 30m/60m signals now map to <b>ts + interval_minutes × 60</b> (first bar after close).
+  Previously mapped 1 bar too early → ~32% of backtest PnL was lookahead artifact.
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 3 · 60m Regime Gate</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">Gate (60m)</div>
+  <div class="layer-body">
+    <div class="gate-box" style="min-width:300px">
+      <div class="name">gate_trend_strength_60</div>
+      <div class="formula">(EMA8_60m − EMA21_60m) / EMA21_60m</div>
+      <div class="sub">Forward-filled to 15m master bars after 60m bar close.<br>
+        <span style="color:#8957e5">Fixed: now uses ts+3600s (was ts+2700s — 1 bar early).</span></div>
+    </div>
+    <div class="gate-box" style="min-width:220px">
+      <div class="name">gate_is_open</div>
+      <div class="formula">ema_fast_60 &gt; ema_slow_60<br>AND trend_strength_60 &gt; 0.0015</div>
+      <div class="sub">Used by: trend_gate, union_strong60 constructions.</div>
+    </div>
+    <div class="gate-box" style="min-width:220px">
+      <div class="name">gate_very_strong_60</div>
+      <div class="formula">ema_fast_60 &gt; ema_slow_60<br>AND trend_strength_60 &gt; 0.0030</div>
+      <div class="sub">Used by: tc15_very60 construction.</div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 4 · Constructions (logical combination of signal components)</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">Any signal +<br>close gate</div>
+  <div class="layer-body">
+    <div class="box pink" style="min-width:250px">
+      <div class="name">union_closehi</div>
+      <div class="formula">ANY(mb60,tc15,tc30,atr30,vst60)<br>AND close_location &gt; 0.75</div>
+      <div class="desc">Used by KERNEL. Best performing construction.<br>
+        Sparse-bar tokens excel here.</div>
+    </div>
+    <div class="box pink" style="min-width:260px">
+      <div class="name">union_closehi_micro ★ NEW</div>
+      <span class="badge new">L2</span>
+      <div class="formula">ANY(mb60,tc15,tc30,atr30,vst60)<br>AND close_location &gt; 0.75<br>AND signal_micro</div>
+      <div class="desc">Requires visible buying pressure in bar structure.
+        Tighter signal quality gate.</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">Any signal +<br>volume gate</div>
+  <div class="layer-body">
+    <div class="box pink" style="min-width:220px">
+      <div class="name">union_volhi</div>
+      <div class="formula">ANY(mb60,tc15,tc30,atr30,vst60)<br>AND volume_ratio &gt; 1.2</div>
+      <div class="desc">Used by HOUSE & SUI. Above-avg volume confirmation.</div>
+    </div>
+    <div class="box pink" style="min-width:250px">
+      <div class="name">union_volhi_micro ★ NEW</div>
+      <span class="badge new">L2</span>
+      <div class="formula">ANY(mb60,tc15,tc30,atr30,vst60)<br>AND volume_ratio &gt; 1.2<br>AND signal_micro</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">Single-signal</div>
+  <div class="layer-body">
+    <div class="box pink">
+      <div class="name">vst60_only</div>
+      <div class="formula">vst60</div>
+      <div class="desc">Used by APTUSD & FHE. Pure 60m volume spike.</div>
+    </div>
+    <div class="box pink">
+      <div class="name">tc15_or_atr30</div>
+      <div class="formula">tc15 OR atr30</div>
+      <div class="desc">Used by GIGA. Two independent momentum signals.</div>
+    </div>
+    <div class="box pink">
+      <div class="name">tc15_cap_or_mb60</div>
+      <div class="formula">(tc15 AND vol_ratio ≤ 4.5) OR mb60</div>
+      <div class="desc">Used by BABY. Caps spike volumes to avoid FOMO entries.</div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 5 · Entry Filters (post-construction quality gates)</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">OHLCV Filters</div>
+  <div class="layer-body">
+    <div class="box gray">
+      <div class="name">base</div>
+      <div class="formula">no additional conditions</div>
+    </div>
+    <div class="box gray">
+      <div class="name">close80_volcap60</div>
+      <div class="formula">close_location ≥ 0.80<br>AND volume_ratio ≤ 6.0</div>
+      <div class="desc">Quality close + no vol spike.</div>
+    </div>
+    <div class="box gray">
+      <div class="name">close80_volcap60_vwap3</div>
+      <div class="formula">close_location ≥ 0.80<br>AND volume_ratio ≤ 6.0<br>AND distance_from_vwap ≤ 0.03</div>
+      <div class="desc">FHE triple filter. VWAP cap is essential.</div>
+    </div>
+    <div class="box gray">
+      <div class="name">gate50_vwap3</div>
+      <div class="formula">gate_trend_strength_60 ≥ 0.005<br>AND distance_from_vwap ≤ 0.03</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">L2 Proxy Filters <span class="badge new" style="position:relative;top:0;right:0;margin-left:4px">NEW</span></div>
+  <div class="layer-body">
+    <div class="box green">
+      <div class="name">wick_bias</div>
+      <div class="formula">wick_imbalance &gt; 0.0<br>AND body_ratio &gt; 0.20</div>
+      <div class="desc">Lower wick longer than upper wick<br>= net buying pressure on bar.</div>
+    </div>
+    <div class="box green">
+      <div class="name">micro_confirmed</div>
+      <div class="formula">close_location ≥ 0.80<br>AND wick_imbalance &gt; 0.05<br>AND body_ratio &gt; 0.25<br>AND micro_pressure &gt; 0.10</div>
+      <div class="desc">Close quality + visible buying pressure<br>in all three microstructure dimensions.</div>
+    </div>
+    <div class="box green">
+      <div class="name">micro_confirmed_volcap60</div>
+      <div class="formula">micro_confirmed + vol_ratio ≤ 6.0</div>
+      <div class="desc">With volume spike cap.</div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 6 · Portfolio Regime Gate (macro filter, per-bar)</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">Regime Gate</div>
+  <div class="layer-body">
+    <div class="gate-box" style="min-width:400px">
+      <div class="name">portfolio_regime_ok</div>
+      <div class="formula">gate_trend_strength_60 ≥ 0.006 AND atr_pct ≥ 0.006</div>
+      <div class="sub">
+        Both must pass simultaneously.<br>
+        gate_trend_strength_60 from <b>60m</b> frame — 56% of bars fail this gate alone.<br>
+        atr_pct from <b>15m</b> ATR — 10% of bars fail this gate alone.<br>
+        Combined: ~58% of all bars have no trading allowed.
+      </div>
+    </div>
+    <div style="font-size:11px; color:#8b949e; padding-top:8px; max-width:320px; line-height:1.6;">
+      <b>entry_signal_pre_regime</b> = construction AND filter<br>
+      <b>entry_signal</b> = entry_signal_pre_regime AND portfolio_regime_ok<br>
+      The gate blocks entries in downtrend or low-volatility regimes.
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 7 · L2 Live Gate (real-time order book, live/paper only)</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">L2 Gate <span class="badge live" style="position:relative;top:0;right:0;margin-left:4px">LIVE</span></div>
+  <div class="layer-body">
+    <div class="box gold" style="min-width:320px">
+      <div class="name">check_l2_entry_gate(l2_features)</div>
+      <div class="formula">spread_pct ≤ 0.50%      → liquid market<br>
+obi ≥ 0.45              → not bearish-dominated<br>
+weighted_obi ≥ 0.44     → weighted book agrees<br>
+depth_ratio ≥ 0.60      → bid depth not crushed</div>
+      <div class="desc">All four must pass. Fetched fresh per candidate.<br>
+        Fails open (passes if orderbook fetch fails).<br>
+        Blocks entries into adverse order flow.</div>
+    </div>
+    <div style="font-size:11px; color:#8b949e; padding-top:8px; max-width:280px; line-height:1.6;">
+      Applied <b>after</b> OHLCV signal gating.<br>
+      Cannot be backtested — no historical L2 snapshots.<br>
+      Expected to improve live win rate by filtering<br>
+      bars where bid side is thin despite strong close.
+    </div>
+  </div>
+</div>
+
+<div class="connector"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="hdiv"><div class="hdiv-line"></div><div class="hdiv-label">Layer 8 · Trade Execution</div><div class="hdiv-line"></div></div>
+
+<div class="layer">
+  <div class="layer-label">Exit Profiles</div>
+  <div class="layer-body">
+    <div class="box gray" style="min-width:520px">
+      <div class="name">Exit Profiles (applied at next bar's open)</div>
+      <table class="metrics" style="margin-top:6px">
+        <tr><td class="k">fast</td><td class="v">stop=1.0%  target=3.0%  max_bars=8</td></tr>
+        <tr><td class="k">base</td><td class="v">stop=1.5%  target=4.5%  max_bars=12</td></tr>
+        <tr><td class="k">medium</td><td class="v">stop=1.25% target=4.0%  max_bars=10</td></tr>
+        <tr><td class="k">runner ★ (most pairs)</td><td class="v">stop=1.5%  target=5.5%  max_bars=14</td></tr>
+      </table>
+    </div>
+    <div class="box gray" style="min-width:320px">
+      <div class="name">Intra-bar Exit Conditions</div>
+      <div class="formula">Stop:        low ≤ stop_price  → exit at stop_price × (1−c−s)<br>
+Target:      high ≥ target_price → exit at target × (1−c−s)<br>
+Time limit:  bars_held ≥ max_hold_bars → exit at close<br>
+Trend lost:  close &lt; ema_fast AND mom_med &lt; 0</div>
+      <div class="desc">Commission (0.26%) + slippage (0.05%) applied on both entry and exit.</div>
+    </div>
+  </div>
+</div>
+
+<div class="layer" style="margin-top:8px">
+  <div class="layer-label">PnL Math</div>
+  <div class="layer-body">
+    <div class="box gray" style="min-width:520px">
+      <div class="name">Round-trip cost verification</div>
+      <div class="formula">entry_price = open_next_bar × (1 + 0.0026 + 0.0005)
+target_price = entry_price × (1 + target_pct)
+exit_price   = target_price × (1 − 0.0031)
+pnl = (exit − entry) / entry − 0.0031
+
+→ runner TAKE_PROFIT: +4.863%  (target 5.5%, cost ~0.637%)
+→ runner STOP_LOSS:   −2.115%  (stop 1.5%, cost ~0.615%)</div>
+      <div class="desc">Commission charged effectively 1.5× round-trip — slightly conservative vs actual Kraken costs (0.62% actual vs 0.62% model). Verified against observed trade PnLs.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- Results panel -->
+<div class="result-panel">
+  <h2>Backtest Results: Before vs After Math Fixes (7-pair portfolio, 120d @ 15m)</h2>
+  <div class="result-row">
+    <div class="result-col">
+      <h3>Before fixes (lookahead bias present)</h3>
+      <div class="stat"><span class="k">Total trades</span><span class="v neu">56</span></div>
+      <div class="stat"><span class="k">Net PnL</span><span class="v pos">+54.3%</span></div>
+      <div class="stat"><span class="k">Win rate</span><span class="v neu">52%</span></div>
+      <div class="stat"><span class="k">Avg trade</span><span class="v pos">+0.969%</span></div>
+      <div class="stat"><span class="k">Max drawdown</span><span class="v neg">−8.20%</span></div>
+      <div class="note" style="margin-top:6px">Signal timing used ts+(interval−15)×60 → signals fired 1 bar before the HTF bar actually closed.</div>
+    </div>
+    <div class="result-col">
+      <h3>After fixes (honest backtest)</h3>
+      <div class="stat"><span class="k">Total trades</span><span class="v neu">40</span></div>
+      <div class="stat"><span class="k">Net PnL</span><span class="v pos">+21.9%</span></div>
+      <div class="stat"><span class="k">Win rate</span><span class="v neu">48%</span></div>
+      <div class="stat"><span class="k">Avg trade</span><span class="v pos">+0.548%</span></div>
+      <div class="stat"><span class="k">Max drawdown</span><span class="v neg">−8.16%</span></div>
+      <div class="note" style="margin-top:6px">60% of prior paper gain was lookahead artifact. Last 30d still strong: +17.7% on 17 trades at 59% win rate.</div>
+    </div>
+    <div class="result-col">
+      <h3>L2 Microstructure (backtest)</h3>
+      <div class="stat"><span class="k">union_closehi_micro</span><span class="v warn">No edge</span></div>
+      <div class="stat"><span class="k">wick_bias filter</span><span class="v warn">Reduces trades, no net gain</span></div>
+      <div class="stat"><span class="k">micro_confirmed</span><span class="v warn">Too restrictive</span></div>
+      <div class="note" style="margin-top:6px">OHLCV bar shape is too coarse to reliably reconstruct order flow. The micro signal fires infrequently and doesn't improve win rate above baseline.</div>
+    </div>
+    <div class="result-col">
+      <h3>L2 Live Gate (expected impact)</h3>
+      <div class="stat"><span class="k">OBI gate</span><span class="v pos">Blocks adverse entries</span></div>
+      <div class="stat"><span class="k">Spread gate</span><span class="v pos">Skips illiquid bars</span></div>
+      <div class="stat"><span class="k">Depth ratio gate</span><span class="v pos">Detects thin bid side</span></div>
+      <div class="stat"><span class="k">Fails open</span><span class="v neu">Won't block if API fails</span></div>
+      <div class="note" style="margin-top:6px">Cannot be backtested. In live trading it filters entries where the close was strong but the book is already ask-heavy.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="legend" style="margin-top:24px">
+  <div class="legend-item"><div class="legend-swatch" style="background:#1f6feb"></div> Price / Trend</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#d29922"></div> Volatility / ATR</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#8957e5"></div> Volume</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#1b7c83"></div> VWAP</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#238636"></div> L2 Microstructure (OHLCV-proxy)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#e3b341"></div> L2 Order Book (live only)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#f85149"></div> Signal Components</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#bc4bec"></div> Constructions</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#30363d"></div> Filters / Exits</div>
+</div>
+
+<p class="note" style="margin-top:24px">
+  Generated: 2026-04-08 · Model: claude-sonnet-4-6 · Pairs: KERNEL, FHE, APT, GIGA, BABY, SUI, HOUSE · Window: 120d @ 15m
+</p>
+
+</body>
+</html>

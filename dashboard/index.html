@@ -114,6 +114,34 @@
           <div class="risk-bars" id="risk-bars"></div>
         </section>
 
+        <section class="panel identity-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-label">On-Chain Trust</p>
+              <h2>ERC-8004 Identity</h2>
+              <p class="panel-subtitle">Base Sepolia identity, recent signed trade intents, and posted feedback artifacts.</p>
+            </div>
+          </div>
+          <div class="identity-grid">
+            <div class="identity-card">
+              <div class="identity-kv"><span>Status</span><strong id="identity-status">Unconfigured</strong></div>
+              <div class="identity-kv"><span>Agent ID</span><strong id="identity-agent-id">-</strong></div>
+              <div class="identity-kv"><span>Wallet</span><strong class="mono" id="identity-wallet">-</strong></div>
+              <div class="identity-kv"><span>Registry</span><strong class="mono" id="identity-registry">-</strong></div>
+            </div>
+            <div class="identity-card">
+              <div class="list-block">
+                <h3>Recent Intents</h3>
+                <div class="mini-list" id="identity-intents"></div>
+              </div>
+              <div class="list-block">
+                <h3>Recent Feedback</h3>
+                <div class="mini-list" id="identity-feedback"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="panel market-panel">
           <div class="panel-head">
             <div>

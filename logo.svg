@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <!-- Background gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#0d1b2a"/>
+      <stop offset="100%" style="stop-color:#060d14"/>
+    </radialGradient>
+
+    <!-- Teal/cyan glow for chart line -->
+    <filter id="glowTeal" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Gold glow for tentacle tips -->
+    <filter id="glowGold" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Soft glow for nodes -->
+    <filter id="glowNode" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Chart line gradient -->
+    <linearGradient id="chartGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00b4d8;stop-opacity:0.3"/>
+      <stop offset="50%" style="stop-color:#00e5ff;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#00ff88;stop-opacity:1"/>
+    </linearGradient>
+
+    <!-- Fill for chart area -->
+    <linearGradient id="chartFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00e5ff;stop-opacity:0.18"/>
+      <stop offset="100%" style="stop-color:#00e5ff;stop-opacity:0"/>
+    </linearGradient>
+
+    <!-- Tentacle gradient -->
+    <linearGradient id="tentacleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#5a3fa0"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+
+    <!-- Clip circle -->
+    <clipPath id="circleClip">
+      <circle cx="200" cy="200" r="172"/>
+    </clipPath>
+  </defs>
+
+  <!-- Outer ring -->
+  <circle cx="200" cy="200" r="192" fill="none" stroke="#1a3a5c" stroke-width="1.5" opacity="0.6"/>
+  <circle cx="200" cy="200" r="185" fill="none" stroke="#0e2a44" stroke-width="0.8" opacity="0.5"/>
+
+  <!-- Main background circle -->
+  <circle cx="200" cy="200" r="180" fill="url(#bgGrad)"/>
+
+  <!-- Subtle grid inside circle -->
+  <g clip-path="url(#circleClip)" opacity="0.07">
+    <line x1="28" y1="140" x2="372" y2="140" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="28" y1="180" x2="372" y2="180" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="28" y1="220" x2="372" y2="220" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="28" y1="260" x2="372" y2="260" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="120" y1="28" x2="120" y2="372" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="160" y1="28" x2="160" y2="372" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="200" y1="28" x2="200" y2="372" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="240" y1="28" x2="240" y2="372" stroke="#4db8d4" stroke-width="0.7"/>
+    <line x1="280" y1="28" x2="280" y2="372" stroke="#4db8d4" stroke-width="0.7"/>
+  </g>
+
+  <!-- ── KRAKEN TENTACLES (stylized, 6 arms radiating from center body) ── -->
+  <!-- Tentacle 1 — upper left -->
+  <path d="M 183 178 C 165 162, 140 158, 118 148 C 105 142, 98 130, 108 122"
+        fill="none" stroke="url(#tentacleGrad)" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <!-- tip dot -->
+  <circle cx="108" cy="121" r="4.5" fill="#f59e0b" filter="url(#glowGold)" opacity="0.9"/>
+
+  <!-- Tentacle 2 — upper right -->
+  <path d="M 217 178 C 235 162, 258 155, 282 148 C 296 142, 304 130, 294 122"
+        fill="none" stroke="url(#tentacleGrad)" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="295" cy="121" r="4.5" fill="#f59e0b" filter="url(#glowGold)" opacity="0.9"/>
+
+  <!-- Tentacle 3 — left -->
+  <path d="M 175 200 C 155 200, 130 194, 105 200 C 90 204, 82 218, 92 228"
+        fill="none" stroke="url(#tentacleGrad)" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="91" cy="229" r="4.5" fill="#f59e0b" filter="url(#glowGold)" opacity="0.9"/>
+
+  <!-- Tentacle 4 — right -->
+  <path d="M 225 200 C 245 200, 270 194, 295 200 C 310 204, 318 218, 308 228"
+        fill="none" stroke="url(#tentacleGrad)" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="309" cy="229" r="4.5" fill="#f59e0b" filter="url(#glowGold)" opacity="0.9"/>
+
+  <!-- Tentacle 5 — lower left -->
+  <path d="M 183 222 C 168 240, 150 258, 132 272 C 120 282, 106 282, 102 270"
+        fill="none" stroke="url(#tentacleGrad)" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="101" cy="269" r="4.5" fill="#f59e0b" filter="url(#glowGold)" opacity="0.9"/>
+
+  <!-- Tentacle 6 — lower right -->
+  <path d="M 217 222 C 232 240, 250 258, 268 272 C 280 282, 294 282, 298 270"
+        fill="none" stroke="url(#tentacleGrad)" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="299" cy="269" r="4.5" fill="#f59e0b" filter="url(#glowGold)" opacity="0.9"/>
+
+  <!-- ── KRAKEN BODY (center circle with eye) ── -->
+  <circle cx="200" cy="200" r="44" fill="#12213a" stroke="#5a3fa0" stroke-width="2.5" opacity="0.95"/>
+  <!-- Eye ring -->
+  <circle cx="200" cy="200" r="28" fill="#0d1b2e" stroke="#8b5cf6" stroke-width="1.5" opacity="0.9"/>
+  <!-- Pupil glow -->
+  <circle cx="200" cy="200" r="16" fill="#1a1040" stroke="#00e5ff" stroke-width="1.2"/>
+  <circle cx="200" cy="200" r="9" fill="#00e5ff" opacity="0.85" filter="url(#glowNode)"/>
+  <!-- Central bright dot -->
+  <circle cx="200" cy="200" r="4" fill="#ffffff" opacity="0.95"/>
+
+  <!-- ── AI CIRCUIT NODES connected to body ── -->
+  <!-- Node rings (small neural network around body) -->
+  <circle cx="200" cy="148" r="5" fill="#8b5cf6" filter="url(#glowNode)" opacity="0.7"/>
+  <circle cx="200" cy="252" r="5" fill="#8b5cf6" filter="url(#glowNode)" opacity="0.7"/>
+  <circle cx="152" cy="200" r="5" fill="#8b5cf6" filter="url(#glowNode)" opacity="0.7"/>
+  <circle cx="248" cy="200" r="5" fill="#8b5cf6" filter="url(#glowNode)" opacity="0.7"/>
+  <!-- Diagonal nodes -->
+  <circle cx="169" cy="169" r="4" fill="#6d4fc7" opacity="0.6"/>
+  <circle cx="231" cy="169" r="4" fill="#6d4fc7" opacity="0.6"/>
+  <circle cx="169" cy="231" r="4" fill="#6d4fc7" opacity="0.6"/>
+  <circle cx="231" cy="231" r="4" fill="#6d4fc7" opacity="0.6"/>
+
+  <!-- ── TRADING CHART (P&L curve in foreground) ── -->
+  <!-- Chart area fill -->
+  <path d="M 68 285 L 95 268 L 120 278 L 148 255 L 175 260 L 200 240 L 225 230 L 252 215 L 278 195 L 305 172 L 330 152 L 330 310 L 68 310 Z"
+        fill="url(#chartFill)" clip-path="url(#circleClip)"/>
+  <!-- Chart line -->
+  <polyline
+    points="68,285 95,268 120,278 148,255 175,260 200,240 225,230 252,215 278,195 305,172 330,152"
+    fill="none" stroke="url(#chartGrad)" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"
+    filter="url(#glowTeal)" clip-path="url(#circleClip)"/>
+  <!-- Candlestick markers on chart -->
+  <g clip-path="url(#circleClip)" opacity="0.7">
+    <rect x="92" y="262" width="6" height="12" rx="1" fill="#00ff88"/>
+    <rect x="118" y="272" width="6" height="12" rx="1" fill="#ff4d6d"/>
+    <rect x="145" y="249" width="6" height="12" rx="1" fill="#00ff88"/>
+    <rect x="172" y="253" width="6" height="14" rx="1" fill="#ff4d6d"/>
+    <rect x="222" y="223" width="6" height="13" rx="1" fill="#00ff88"/>
+    <rect x="249" y="208" width="6" height="13" rx="1" fill="#00ff88"/>
+    <rect x="275" y="188" width="6" height="13" rx="1" fill="#00ff88"/>
+    <rect x="302" y="165" width="6" height="14" rx="1" fill="#00ff88"/>
+  </g>
+  <!-- Live dot at end of chart -->
+  <circle cx="330" cy="152" r="5.5" fill="#00ff88" filter="url(#glowNode)" clip-path="url(#circleClip)"/>
+  <circle cx="330" cy="152" r="2.5" fill="#ffffff" clip-path="url(#circleClip)"/>
+
+  <!-- Outer decorative ring tick marks -->
+  <g stroke="#1e4060" stroke-width="1.2" opacity="0.5">
+    <line x1="200" y1="16" x2="200" y2="26"/>
+    <line x1="200" y1="374" x2="200" y2="384"/>
+    <line x1="16" y1="200" x2="26" y2="200"/>
+    <line x1="374" y1="200" x2="384" y2="200"/>
+    <line x1="75" y1="47" x2="80" y2="56"/>
+    <line x1="325" y1="47" x2="320" y2="56"/>
+    <line x1="75" y1="353" x2="80" y2="344"/>
+    <line x1="325" y1="353" x2="320" y2="344"/>
+  </g>
+
+  <!-- ── TEXT ── -->
+  <!-- Main title -->
+  <text x="200" y="348"
+        font-family="'Courier New', Courier, monospace"
+        font-size="15" font-weight="700" letter-spacing="5"
+        fill="#00e5ff" text-anchor="middle" opacity="0.95">KRAKEN AI</text>
+  <!-- Sub title -->
+  <text x="200" y="366"
+        font-family="'Courier New', Courier, monospace"
+        font-size="8.5" font-weight="400" letter-spacing="4"
+        fill="#5a7fa0" text-anchor="middle" opacity="0.8">TRADING AGENT</text>
+</svg>

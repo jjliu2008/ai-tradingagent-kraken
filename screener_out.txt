@@ -1,0 +1,31 @@
+  ADAUSD: 3 candidates
+  APTUSD: 3 candidates
+  BABYUSD: 3 candidates
+  BERAUSD: 3 candidates
+  COQUSD: 3 candidates
+  ETHUSD: 3 candidates
+  FHEUSD: 3 candidates
+  GIGAUSD: 3 candidates
+  HOUSEUSD: 3 candidates
+  HYPEUSD: 3 candidates
+  KERNELUSD: 3 candidates
+  NIGHTUSD: 3 candidates
+  PARTIUSD: 3 candidates
+  SUIUSD: 3 candidates
+  TAOUSD: 3 candidates
+  XDGUSD: 3 candidates
+  ZECUSD: 3 candidates
+Traceback (most recent call last):
+  File "C:\Users\majin\ai-tradingagent-kraken\older60_pair_screener.py", line 285, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\majin\ai-tradingagent-kraken\older60_pair_screener.py", line 281, in main
+    run_screener(args.history_days, top_k=args.top_k, run_id=args.run_id)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\majin\ai-tradingagent-kraken\older60_pair_screener.py", line 271, in run_screener
+    print(f"\nolder60_screener: {len(paths)} pairs \u2192 {len(all_candidates)} candidates \u2192 {out_path}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\majin\AppData\Local\Python\pythoncore-3.14-64\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 29: character maps to <undefined>

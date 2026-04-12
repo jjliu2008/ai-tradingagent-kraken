@@ -72,11 +72,11 @@ python backtest_equity_curve.py
 
 ### Manual commands
 ```bash
-# Paper trading — safe, uses live prices
-python universe_scanner_agent.py --mode paper --reset-paper --poll 60
+# Paper trading — safe, uses the active research registry by default
+python universe_scanner_agent.py --mode paper --reset-paper --poll 60 --interval 15
 
 # Live trading (requires API keys in .env)
-python universe_scanner_agent.py --mode live --poll 60
+python universe_scanner_agent.py --mode live --poll 60 --interval 15
 
 # Backtest a specific pair with custom notional
 python backtest_equity_curve.py --pairs GIGAUSD,ZECUSD --notional 500
@@ -87,8 +87,9 @@ python backtest_equity_curve.py --pairs GIGAUSD,ZECUSD --notional 500
 ## Architecture
 
 ```
-universe_scanner_agent.py   ← Main entry point. Watches GIGAUSD + ZECUSD,
-                              runs consensus signals, manages positions,
+universe_scanner_agent.py   ← Main entry point. By default trades the
+                              active research registry (currently the
+                              robust 5-pair set), manages positions,
                               logs mark-to-market P&L every cycle.
 
 consensus_agent.py          ← Signal definitions + feature computation.

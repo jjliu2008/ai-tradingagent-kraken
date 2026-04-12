@@ -1,8 +1,8 @@
 """
 Universe Scanner Agent
 ======================
-Default mode runs the robust 5-pair research registry:
-GIGAUSD, BABYUSD, FHEUSD, KERNELUSD, HOUSEUSD.
+Default mode runs the live research registry:
+GIGAUSD, ZECUSD, FHEUSD, KERNELUSD, HOUSEUSD, BABYUSD.
 
 It plots continuous mark-to-market P&L every poll cycle and supports a legacy
 consensus universe mode as an explicit override.

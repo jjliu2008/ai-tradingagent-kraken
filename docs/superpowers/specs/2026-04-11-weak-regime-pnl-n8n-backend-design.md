@@ -51,13 +51,27 @@ For each pair in the densified universe, re-run the full proven family library:
 
 This is a per-pair re-evaluation, not a fixed-registry check.
 
-**Scoring objective (constrained):**
-- Primary sort: `older60_net_pct`
-- Hard gates: `recent60_net_pct > 0`, `full_net_pct > 0`
-- Minimum trade count: ≥3 trades required in each segment (not just full 120d)
-- Drawdown penalty applied
-- Concentration impact: penalty when one pair dominates portfolio contribution
-- Portfolio contribution check: candidate must improve the combined portfolio's older-60d result, not just its own isolated PnL
+**Evidence bars by tier:**
+- `core_candidates`: `older60_trades >= 5`, `recent60_trades >= 3`, `full_trades >= 8`
+- `shadow_candidates`: `older60_trades >= 4`, `recent60_trades >= 1`, `full_trades >= 4`
+
+**Scoring objective (constrained, uncertainty-adjusted):**
+- Hard gates for `core_candidates`: `older60_net_pct > 0`, `recent60_net_pct > 0`, `full_net_pct > 0`
+- Hard gates for `shadow_candidates`: `recent60_net_pct > 0`, `full_net_pct > 0`, plus older60 positive or near-flat rule from Layer 3
+- Segment terms:
+  - `older60_term = older60_net_pct * min(1.0, sqrt(older60_trades / 5.0))`
+  - `recent60_term = recent60_net_pct * min(1.0, sqrt(recent60_trades / 3.0))`
+  - `full120_term = full_net_pct * min(1.0, sqrt(full_trades / 8.0))`
+- Penalties:
+  - `drawdown_penalty = max(0.0, -full_max_dd_pct)`
+  - `concentration_penalty = max(0.0, candidate_contribution_share - 0.35) / 0.15`
+  - `correlation_penalty = max(0.0, max_signal_correlation_to_active - 0.70) / 0.30`
+- Ranking equation:
+  - `robustness_score = 1.50 * older60_term + 1.00 * recent60_term + 0.75 * full120_term - 0.50 * drawdown_penalty - 0.25 * concentration_penalty - 0.25 * correlation_penalty`
+
+**Important boundary:**
+- Layer 1 ranks pair-plan candidates only
+- Exact portfolio replacement checks happen later in `registry_proposal.py`, where the candidate is evaluated in the context of the current roster
 
 **Output:** Top-K plans per pair (default K=3), written to `results/research_runs/<run_id>/older60_candidates.json`
 
@@ -97,11 +111,36 @@ Discovery is not "best score wins." It becomes: which plan works, and under what
 
 Consumes Layer 2 JSON artifacts from the same run (by `source_run_id`).
 
+**Allowed fingerprint fields (pre-specified, no freeform expansion):**
+- `gate_trend_strength_60` bucket
+- `atr_pct` bucket
+- `efficiency_ratio_8` bucket
+- `distance_from_vwap` bucket
+- `close_location` bucket
+- `volume_ratio` bucket
+- `component_count`
+- top exit reason / exit mix bucket
+
+**Fingerprint similarity score (pre-specified):**
+- Weighted bucket-match score:
+  - `0.25` trend bucket
+  - `0.20` ATR bucket
+  - `0.15` efficiency bucket
+  - `0.15` VWAP-distance bucket
+  - `0.10` close-quality bucket
+  - `0.10` volume bucket
+  - `0.05` exit-mix bucket
+- `pattern_match_score` is normalized to `[0, 1]`
+
 **Logic:**
 - Reassign a pair to the proven family that best matches its older-60d pattern fingerprint
-- Allow near-flat pairs (|older60_net_pct| < 0.005) into shadow if they show strong behavior in a specific older-60d pattern AND have ≥4 trades in the older-60d segment
-- Dynamic pair-to-family assignment driven by observed pattern fingerprints, not invented logic
+- Allow near-flat pairs (`|older60_net_pct| < 0.005`) into shadow only if they have `>=4` older-60d trades, `pattern_match_score >= 0.65`, and positive `robustness_score`
+- Dynamic pair-to-family assignment is driven by observed pattern fingerprints, not invented logic
 - Still limited to proven building blocks
+- A reassignment is only accepted if it beats both:
+  - `keep_current_family`
+  - `best_raw_segmented_score`
+  by positive `robustness_score` and without violating recent60/full120 positivity gates
 
 **Outputs:**
 - `results/research_runs/<run_id>/core_candidates.json`
@@ -112,7 +151,7 @@ Consumes Layer 2 JSON artifacts from the same run (by `source_run_id`).
 - `older60_net_pct > 0` OR near-flat (|older60_net_pct| < 0.005) with ≥4 older-60d trades and strong pattern match
 - `recent60_net_pct > 0`
 - `full_net_pct > 0`
-- Minimum per-segment trade count satisfied
+- Minimum per-segment trade count satisfied for the `shadow_candidates` tier
 
 ---
 
@@ -146,16 +185,25 @@ This layer is for targeted experiments, not the default discovery loop.
 - Computed from each pair's own 120d densified history (not a global gate)
 - `weak_defensive` threshold = pair-specific percentile of weak score distribution
 - Thresholds stored in `SUPPRESSION_THRESHOLDS` dict in `research_runtime.py`
+- Each pair also gets:
+  - `weak_defensive_enter_threshold`
+  - `weak_defensive_exit_threshold`
+  - minimum dwell / cooldown bars before returning to `normal`
 
 **State machine (evaluated at portfolio and pair level independently):**
 
 | State | Trigger | Behavior |
 |---|---|---|
 | `normal` | Portfolio and pair regime healthy | Full activity, full notional |
-| `weak_defensive` | Pair weak score above threshold for 2–3 consecutive bars, OR portfolio composite threshold crossed | Drop lowest-conviction pairs first (ranked by older-60d robustness); keep resilient core; optionally reduce notional |
+| `weak_defensive` | Pair weak score above enter threshold for 2–3 consecutive bars, OR portfolio composite threshold crossed | Drop lowest-conviction pairs first (ranked by older-60d robustness); keep resilient core; optionally reduce notional |
 | `off` | Portfolio composite weak score high AND gate-open share very low AND signal density near zero, for 3–4 consecutive bars | No new entries; existing positions managed to exit only |
 
 Deactivation order in `weak_defensive`: pairs ranked by older-60d robustness score from Layer 1 — least robust drops first.
+
+**Anti-whipsaw rules:**
+- `weak_defensive -> normal` requires weak score below exit threshold for `>=4` consecutive bars
+- `off -> weak_defensive` requires composite weak score below exit threshold and gate-open share recovery for `>=6` consecutive bars
+- State changes are recorded with `bars_in_state`, `bars_above_threshold`, and `bars_below_threshold`
 
 **Integration points:**
 - `universe_scanner_agent.py` — primary paper/live path (authoritative)
@@ -170,13 +218,15 @@ Deactivation order in `weak_defensive`: pairs ranked by older-60d robustness sco
 discovery → shadow → active_experimental → active
 ```
 
-- **shadow**: auto-promoted by daily n8n workflow if concentration gate passes
+- **shadow**: auto-promoted by daily n8n workflow only if concentration, robustness, and correlation sanity gates all pass
 - **active_experimental**: requires explicit webhook approval (manual trigger)
 - **active**: requires explicit webhook approval
 
 **Concentration gate for shadow auto-promotion:**
 - Blocked if candidate pushes single-pair shadow-book concentration above 35%
 - Blocked if 3+ candidates from the same regime-sensitivity cluster promote in one daily run
+- Blocked if `robustness_score <= 0`
+- Blocked if max signal correlation to current active book exceeds `0.75`
 - Blocked candidates flagged in proposal with `approval_required: true`
 
 No `shadow_experimental` tier. Metadata in proposal artifact carries the distinction:
@@ -193,12 +243,20 @@ No `shadow_experimental` tier. Metadata in proposal artifact carries the distinc
 3. Run `segment_diagnostics.py` → pair pattern notes, behavior summary, failure notes
 4. Run `pattern_guided_discovery.py` → core and shadow candidates
 5. Run `registry_proposal.py` → versioned proposal artifact with diff vs current registry
-6. Evaluate concentration gate → auto-apply clean shadow promotions
+6. Evaluate concentration, robustness, and correlation gates → auto-apply clean shadow promotions
 7. Flag concentration-breaching candidates with `approval_required: true`
 8. Send summary alert (Slack/webhook): candidates, impact scores, before/after portfolio metrics
 
 **Artifact directory:** `results/research_runs/<run_id>/`
 **Convenience symlink/copy:** `results/latest/`
+
+**Workflow safety / idempotency requirements:**
+- `run_id` is immutable and unique per research run
+- Artifacts are written to a temp directory and atomically renamed into `results/research_runs/<run_id>/`
+- Re-running the same `run_id` is read-only and must not re-apply promotions
+- Registry proposals include `registry_hash_before` so apply steps can verify expected state
+- Every approval action includes an idempotency token and candidate identifier
+- Duplicate webhooks must be safe to replay with no double promotion
 
 ### Intraday Agent Workflow (every 15m, bar-close aligned)
 
@@ -206,6 +264,11 @@ No `shadow_experimental` tier. Metadata in proposal artifact carries the distinc
 2. Run `universe_scanner_agent.py` with current active registry + suppression state
 3. Collect health, open positions, signals fired, blocked reasons
 4. Fire alert on: new entry, exit, suppression state change, agent error
+
+**Intraday safety requirements:**
+- Suppression evaluation aborts if latest bar timestamp is stale or unchanged
+- `suppression_state.json` includes `source_run_id` and bar timestamp to detect stale inputs
+- Runtime reads suppression state idempotently at each bar close; partial writes are ignored
 
 ### Approval Workflow (triggered by daily workflow output)
 
@@ -254,13 +317,17 @@ No `shadow_experimental` tier. Metadata in proposal artifact carries the distinc
   "schema_version": "1.0",
   "run_ts": 1234567890,
   "source_run_id": "2026-04-11T00:00:00",
+  "bar_ts": 1234567800,
   "portfolio_state": "normal",
   "pairs": {
     "GIGAUSD": {
       "state": "normal",
       "weak_score": 0.12,
       "bars_in_state": 0,
+      "bars_above_threshold": 0,
+      "bars_below_threshold": 5,
       "threshold": 0.45,
+      "exit_threshold": 0.38,
       "reason_tags": [],
       "notional_multiplier": 1.0,
       "allow_new_entries": true
@@ -285,6 +352,7 @@ No `shadow_experimental` tier. Metadata in proposal artifact carries the distinc
   "schema_version": "1.0",
   "run_id": "2026-04-11T00:00:00",
   "source_run_id": "2026-04-11T00:00:00",
+  "registry_hash_before": "sha256:...",
   "core_candidates": [],
   "shadow_candidates": [],
   "diff": {
@@ -295,6 +363,8 @@ No `shadow_experimental` tier. Metadata in proposal artifact carries the distinc
         "approval_required": false,
         "cluster_id": "tc15_group",
         "concentration_weight": 0.12,
+        "max_signal_correlation_to_active": 0.41,
+        "robustness_score": 0.084,
         "source_run_id": "2026-04-11T00:00:00"
       }
     ],
@@ -319,7 +389,11 @@ No `shadow_experimental` tier. Metadata in proposal artifact carries the distinc
 
 ## Success Criteria
 
-- Older-60d portfolio PnL moves from -1.48% toward breakeven or positive without degrading recent-60d below +25%
+- Older-60d portfolio PnL moves from -1.48% toward breakeven or positive
+- Recent-60d remains positive and does not degrade by more than 5 percentage points versus the baseline computed from the same run
+- Full-120d remains positive
+- Top pair contribution share stays below 45% of full-120d net PnL
+- Leave-one-top-contributor-out portfolio remains non-negative on full-120d and positive on recent-60d
 - Suppression state correctly identifies weak periods and prevents new entries during them
 - Daily n8n workflow runs end-to-end without manual intervention for the research loop
 - Intraday n8n workflow fires on 15m bar closes and alerts on state changes

@@ -11,6 +11,7 @@ __pycache__/
 # Runtime / generated data
 runtime/
 data_cache/
+data_cache_walkforward/
 
 # Intermediate research artifacts (kept locally in archive/)
 archive/

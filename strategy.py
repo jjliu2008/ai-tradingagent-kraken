@@ -162,28 +162,70 @@ def parse_ohlc(raw: dict) -> pd.DataFrame:
 
 
 def _compute_session_vwap(out: pd.DataFrame) -> pd.Series:
+    # Use vwap_k (trade-weighted avg price per bar) instead of close * volume.
+    # This gives a more accurate running VWAP than close-weighted approximation.
     session_keys = pd.to_datetime(out["ts"], unit="s", utc=True).dt.strftime("%Y-%m-%d")
-    cum_pv = (out["close"] * out["volume"]).groupby(session_keys).cumsum()
+    price_col = out["vwap_k"] if "vwap_k" in out.columns else out["close"]
+    cum_pv = (price_col * out["volume"]).groupby(session_keys).cumsum()
     cum_vol = out["volume"].groupby(session_keys).cumsum().replace(0, np.nan)
     return cum_pv / cum_vol
 
 
-def compute_orderbook_features(orderbook: dict) -> tuple[float, float]:
+def compute_orderbook_features(orderbook: dict, n_levels: int = 10) -> dict:
+    """
+    Compute L2 order book features from a Kraken orderbook response.
+
+    Returns a dict with:
+        obi            — simple top-5 order book imbalance (bids / total)
+        weighted_obi   — inverse-rank-weighted OBI across n_levels
+        spread_pct     — (best_ask - best_bid) / mid
+        mid_price      — (best_bid + best_ask) / 2
+        depth_ratio    — bid depth within 1% of mid / ask depth within 1%
+        bid_depth_1pct — total bid volume within 1% of mid
+        ask_depth_1pct — total ask volume within 1% of mid
+    """
     pair_key = next(iter(orderbook))
     payload = orderbook[pair_key]
-    bids = [(float(price), float(size)) for price, size, *_ in payload["bids"][:5]]
-    asks = [(float(price), float(size)) for price, size, *_ in payload["asks"][:5]]
-
-    bid_vol = sum(size for _, size in bids)
-    ask_vol = sum(size for _, size in asks)
-    total = bid_vol + ask_vol
-    obi = bid_vol / total if total > 0 else 0.5
+    bids = [(float(p), float(s)) for p, s, *_ in payload["bids"][:n_levels]]
+    asks = [(float(p), float(s)) for p, s, *_ in payload["asks"][:n_levels]]
 
     best_bid = bids[0][0] if bids else 0.0
     best_ask = asks[0][0] if asks else 0.0
-    mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0
-    spread_pct = (best_ask - best_bid) / mid if mid else 0.0
-    return obi, spread_pct
+    mid = (best_bid + best_ask) / 2.0 if best_bid and best_ask else 0.0
+    spread_pct = (best_ask - best_bid) / mid if mid > 0 else 0.0
+
+    # Simple top-5 OBI (backward-compatible)
+    bid_vol5 = sum(s for _, s in bids[:5])
+    ask_vol5 = sum(s for _, s in asks[:5])
+    total5 = bid_vol5 + ask_vol5
+    obi = bid_vol5 / total5 if total5 > 0 else 0.5
+
+    # Inverse-rank-weighted OBI — closer levels get higher weight
+    def _weighted(levels: list) -> float:
+        return sum(s / (i + 1) for i, (_, s) in enumerate(levels))
+
+    w_bid = _weighted(bids)
+    w_ask = _weighted(asks)
+    w_total = w_bid + w_ask
+    weighted_obi = w_bid / w_total if w_total > 0 else 0.5
+
+    # Depth within 1% of mid
+    def _depth_within(levels: list, pct: float) -> float:
+        return sum(s for p, s in levels if mid > 0 and abs(p - mid) / mid <= pct)
+
+    bid_depth = _depth_within(bids, 0.01)
+    ask_depth = _depth_within(asks, 0.01)
+    depth_ratio = bid_depth / ask_depth if ask_depth > 0 else 1.0
+
+    return {
+        "obi": obi,
+        "weighted_obi": weighted_obi,
+        "spread_pct": spread_pct,
+        "mid_price": mid,
+        "bid_depth_1pct": bid_depth,
+        "ask_depth_1pct": ask_depth,
+        "depth_ratio": depth_ratio,
+    }
 
 
 def compute_features(df: pd.DataFrame, config: StrategyConfig = DEFAULT_CONFIG) -> pd.DataFrame:
@@ -246,6 +288,23 @@ def compute_features(df: pd.DataFrame, config: StrategyConfig = DEFAULT_CONFIG) 
     out["close_location"] = (out["close"] - out["low"]) / bar_range
     out["support_price"] = pd.concat([out["session_vwap"], out["ema_slow"]], axis=1).min(axis=1)
 
+    # --- Bar microstructure (L2 proxies from OHLCV) ---
+    # These approximate order-book pressure using bar structure.
+    upper_body = pd.concat([out["open"], out["close"]], axis=1).max(axis=1)
+    lower_body = pd.concat([out["open"], out["close"]], axis=1).min(axis=1)
+    out["body_ratio"] = (out["close"] - out["open"]).abs() / bar_range
+    out["upper_wick"] = (out["high"] - upper_body) / bar_range
+    out["lower_wick"] = (lower_body - out["low"]) / bar_range
+    # >0 means lower wick > upper wick → net buying pressure
+    out["wick_imbalance"] = out["lower_wick"] - out["upper_wick"]
+    # Signed: +0.5 = close at bar high, -0.5 = close at bar low
+    out["micro_pressure"] = (out["close"] - (out["high"] + out["low"]) / 2) / bar_range
+    # Trade density: higher count/volume = many small retail trades
+    count_safe = out["count"].replace(0, np.nan)
+    out["avg_trade_size"] = out["volume"] / count_safe
+    out["trade_count_ma"] = out["count"].rolling(20, min_periods=5).mean().shift(1)
+    out["trade_density_ratio"] = out["count"] / out["trade_count_ma"].replace(0, np.nan)
+
     return out
 
 
@@ -295,6 +354,42 @@ def resample_ohlcv(df: pd.DataFrame, interval: int) -> pd.DataFrame:
     return agg[raw_cols].reset_index(drop=True)
 
 
+def densify_ohlcv(df: pd.DataFrame, interval_minutes: int = MASTER_INTERVAL_MINUTES) -> pd.DataFrame:
+    """
+    Reindex df to a complete clock grid at interval_minutes cadence.
+
+    Sparse pairs (e.g. KERNELUSD at 25% bar density) skip long stretches of empty
+    time, which compresses EMA, ATR, momentum, and compression windows onto
+    "active-bar counts" rather than real elapsed time.  Densifying first ensures
+    all feature windows span the same real duration across all pairs.
+
+    Empty slots are filled as:
+      open = high = low = close = previous close  (doji candle, no movement)
+      volume = 0, count = 0
+      vwap_k = previous close  (no trades → carry last price)
+    """
+    raw_cols = ["ts", "open", "high", "low", "close", "vwap_k", "volume", "count"]
+    frame = df[raw_cols].copy()
+    step = interval_minutes * 60
+    t_min = int(frame["ts"].iloc[0])
+    t_max = int(frame["ts"].iloc[-1])
+    full_ts = pd.Series(range(t_min, t_max + step, step), name="ts")
+    frame = frame.set_index("ts").reindex(full_ts)
+    # Forward-fill price columns so empty bars carry the last traded price.
+    for col in ["open", "high", "low", "close", "vwap_k"]:
+        frame[col] = frame[col].ffill()
+    # Overwrite open/high/low with close so doji candles have zero range.
+    no_trade = frame["volume"].isna()
+    frame.loc[no_trade, "open"]  = frame.loc[no_trade, "close"]
+    frame.loc[no_trade, "high"]  = frame.loc[no_trade, "close"]
+    frame.loc[no_trade, "low"]   = frame.loc[no_trade, "close"]
+    frame["volume"] = frame["volume"].fillna(0.0)
+    frame["count"]  = frame["count"].fillna(0.0)
+    frame = frame.reset_index().rename(columns={"index": "ts"})
+    frame["ts"] = frame["ts"].astype(int)
+    return frame[raw_cols].reset_index(drop=True)
+
+
 def _prepare_ensemble_frame(df: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     raw_cols = ["ts", "open", "high", "low", "close", "vwap_k", "volume", "count"]
     return add_ensemble_features(compute_features(df[raw_cols].copy().reset_index(drop=True), config=config))
@@ -305,7 +400,10 @@ def _map_signal_to_master(
     signal_ts: pd.Series,
     interval_minutes: int,
 ) -> pd.Series:
-    actionable_ts = signal_ts.astype(int) + (interval_minutes - MASTER_INTERVAL_MINUTES) * 60
+    # Map the closed higher-timeframe bar to the first master bar AFTER it closes.
+    # A bar with label ts (left-closed) covers [ts, ts+interval_minutes*60).
+    # The earliest master bar that can act on it is at ts + interval_minutes*60.
+    actionable_ts = signal_ts.astype(int) + interval_minutes * 60
     return master_ts.astype(int).isin(actionable_ts.astype(int)).astype(bool)
 
 
@@ -405,22 +503,27 @@ def ensemble_construction_names() -> tuple[str, ...]:
         "union_closehi",
         "union_volhi",
         "baseline_or_tc15_strong60",
+        "union_closehi_micro",
+        "union_volhi_micro",
     )
 
 
 def _construction_mask(frame: pd.DataFrame, construction: str) -> pd.Series:
     signals = {
-        "mb60": frame["signal_mb60"].fillna(False),
+        "mb60":  frame["signal_mb60"].fillna(False),
         "mbt30": frame["signal_mbt30"].fillna(False),
         "vst60": frame["signal_vst60"].fillna(False),
-        "tc30": frame["signal_tc30"].fillna(False),
-        "tc15": frame["signal_tc15"].fillna(False),
+        "tc30":  frame["signal_tc30"].fillna(False),
+        "tc15":  frame["signal_tc15"].fillna(False),
         "atr30": frame["signal_atr30"].fillna(False),
+        "micro": frame.get("signal_micro", pd.Series(False, index=frame.index)).fillna(False),
     }
-    strong_60 = frame["gate_is_open"].fillna(False)
+    strong_60    = frame["gate_is_open"].fillna(False)
     very_strong_60 = frame["gate_very_strong_60"].fillna(False)
-    close_high = (frame["close_location"] > 0.75).fillna(False)
-    volume_high = (frame["volume_ratio"] > 1.2).fillna(False)
+    close_high   = (frame["close_location"] > 0.75).fillna(False)
+    volume_high  = (frame["volume_ratio"] > 1.2).fillna(False)
+    # Microstructure confirmation: buying pressure visible in bar shape
+    micro_confirmed = signals["micro"]
 
     constructions = {
         "trend_gate": (signals["mbt30"] | signals["tc30"] | signals["atr30"] | signals["tc15"]) & strong_60,
@@ -461,6 +564,13 @@ def _construction_mask(frame: pd.DataFrame, construction: str) -> pd.Series:
             signals["mb60"] | signals["tc15"] | signals["tc30"] | signals["atr30"] | signals["vst60"]
         ) & volume_high,
         "baseline_or_tc15_strong60": (signals["mb60"] | signals["tc15"]) & strong_60,
+        # L2-proxy constructions: require microstructure buying pressure confirmation
+        "union_closehi_micro": (
+            signals["mb60"] | signals["tc15"] | signals["tc30"] | signals["atr30"] | signals["vst60"]
+        ) & close_high & micro_confirmed,
+        "union_volhi_micro": (
+            signals["mb60"] | signals["tc15"] | signals["tc30"] | signals["atr30"] | signals["vst60"]
+        ) & volume_high & micro_confirmed,
     }
     if construction not in constructions:
         supported = ", ".join(ensemble_construction_names())
@@ -477,6 +587,7 @@ def build_ensemble_frame(
         return pd.DataFrame()
 
     raw = df[["ts", "open", "high", "low", "close", "vwap_k", "volume", "count"]].copy().reset_index(drop=True)
+    raw = densify_ohlcv(raw, MASTER_INTERVAL_MINUTES)
     master = _prepare_ensemble_frame(raw, config=config)
     frame30 = _prepare_ensemble_frame(resample_ohlcv(raw, 30), config=config)
     frame60 = _prepare_ensemble_frame(resample_ohlcv(raw, 60), config=config)
@@ -494,8 +605,19 @@ def build_ensemble_frame(
     signal_tc30 = _map_signal_to_master(master_ts, frame30.loc[mask30["tc30"], "ts"], 30)
     signal_atr30 = _map_signal_to_master(master_ts, frame30.loc[mask30["atr30"], "ts"], 30)
 
+    # Microstructure signal: buying pressure visible in bar structure.
+    # Does not require a higher timeframe — uses the 15m bar directly.
+    trend_up_master = (master["ema_fast"] > master["ema_slow"]).fillna(False)
+    signal_micro = (
+        (master["wick_imbalance"].fillna(0) > 0.10)
+        & (master["body_ratio"].fillna(0) > 0.25)
+        & (master["micro_pressure"].fillna(0) > 0.15)
+        & trend_up_master
+    ).fillna(False)
+
     gate60 = frame60[["ts", "ema_fast", "ema_slow", "trend_strength", "momentum_medium"]].copy()
-    gate60["effective_ts"] = gate60["ts"].astype(int) + (60 - MASTER_INTERVAL_MINUTES) * 60
+    # Gate becomes available after the 60m bar closes (ts + 60 minutes).
+    gate60["effective_ts"] = gate60["ts"].astype(int) + 60 * 60
     reg60 = (
         gate60.set_index("effective_ts")[["ema_fast", "ema_slow", "trend_strength", "momentum_medium"]]
         .reindex(master_ts)
@@ -514,23 +636,28 @@ def build_ensemble_frame(
         + signal_vst60.astype(int)
         + signal_tc30.astype(int)
         + signal_atr30.astype(int)
+        + signal_micro.astype(int)
     )
     entry_signal = _construction_mask(
         pd.DataFrame(
             {
-                "signal_mb60": signal_mb60.to_numpy(dtype=bool),
-                "signal_tc15": signal_tc15.to_numpy(dtype=bool),
-                "signal_mbt30": signal_mbt30.to_numpy(dtype=bool),
-                "signal_vst60": signal_vst60.to_numpy(dtype=bool),
-                "signal_tc30": signal_tc30.to_numpy(dtype=bool),
-                "signal_atr30": signal_atr30.to_numpy(dtype=bool),
-                "gate_is_open": gate_mask.to_numpy(dtype=bool),
+                "signal_mb60":       signal_mb60.to_numpy(dtype=bool),
+                "signal_tc15":       signal_tc15.to_numpy(dtype=bool),
+                "signal_mbt30":      signal_mbt30.to_numpy(dtype=bool),
+                "signal_vst60":      signal_vst60.to_numpy(dtype=bool),
+                "signal_tc30":       signal_tc30.to_numpy(dtype=bool),
+                "signal_atr30":      signal_atr30.to_numpy(dtype=bool),
+                "signal_micro":      signal_micro.to_numpy(dtype=bool),
+                "gate_is_open":      gate_mask.to_numpy(dtype=bool),
                 "gate_very_strong_60": (
                     (reg60["ema_fast"] > reg60["ema_slow"])
                     & (reg60["trend_strength"] > 0.0030)
                 ).fillna(False).to_numpy(dtype=bool),
-                "close_location": master["close_location"].to_numpy(dtype=float),
-                "volume_ratio": master["volume_ratio"].to_numpy(dtype=float),
+                "close_location":    master["close_location"].to_numpy(dtype=float),
+                "volume_ratio":      master["volume_ratio"].to_numpy(dtype=float),
+                "wick_imbalance":    master["wick_imbalance"].fillna(0).to_numpy(dtype=float),
+                "body_ratio":        master["body_ratio"].fillna(0).to_numpy(dtype=float),
+                "micro_pressure":    master["micro_pressure"].fillna(0).to_numpy(dtype=float),
             }
         ),
         construction=construction,
@@ -553,6 +680,7 @@ def build_ensemble_frame(
     out["signal_vst60"] = signal_vst60.to_numpy(dtype=bool)
     out["signal_tc30"] = signal_tc30.to_numpy(dtype=bool)
     out["signal_atr30"] = signal_atr30.to_numpy(dtype=bool)
+    out["signal_micro"] = signal_micro.to_numpy(dtype=bool)
     out["gate_ema_fast_60"] = reg60["ema_fast"].to_numpy()
     out["gate_ema_slow_60"] = reg60["ema_slow"].to_numpy()
     out["gate_trend_strength_60"] = reg60["trend_strength"].to_numpy()
