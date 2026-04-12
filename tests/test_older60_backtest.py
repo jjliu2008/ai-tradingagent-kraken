@@ -47,6 +47,26 @@ def test_summarize_splits_older_and_recent():
     assert abs(result["recent60_net_pct"] - (-0.02)) < 1e-9
 
 
+def test_build_equity_curve_uses_exit_order_and_preserves_end_value():
+    from general_portfolio_backtest import _build_equity_curve
+
+    trade_a = _make_fake_trade(1_700_000_100, 0.05, pair="AAAUSD")
+    trade_a.exit_ts = 1_700_000_500
+    trade_b = _make_fake_trade(1_700_000_200, -0.02, pair="BBBUSD")
+    trade_b.exit_ts = 1_700_000_400
+
+    curve = _build_equity_curve([trade_a, trade_b], start_ts=1_700_000_000, end_ts=1_700_001_000)
+
+    assert curve[0]["ts"] == 1_700_000_000
+    assert curve[0]["net_pct"] == 0.0
+    assert curve[1]["ts"] == 1_700_000_400
+    assert abs(curve[1]["net_pct"] - (-0.02)) < 1e-9
+    assert curve[2]["ts"] == 1_700_000_500
+    assert abs(curve[2]["net_pct"] - 0.03) < 1e-9
+    assert curve[-1]["ts"] == 1_700_001_000
+    assert abs(curve[-1]["net_pct"] - 0.03) < 1e-9
+
+
 def test_run_portfolio_backtest_summary_keys():
     """run_portfolio_backtest summary includes older60 and recent60 keys."""
     import general_portfolio_backtest as gpb
@@ -75,5 +95,8 @@ def test_run_portfolio_backtest_summary_keys():
         assert "older60" in summary, "summary missing 'older60'"
         assert "recent60" in summary, "summary missing 'recent60'"
         assert "split_ts" in summary, "summary missing 'split_ts'"
+        assert "equity_curve" in summary, "summary missing 'equity_curve'"
+        assert "recent_trades" in summary, "summary missing 'recent_trades'"
+        assert "pair_plans" in summary, "summary missing 'pair_plans'"
     finally:
         gpb._load_uniform_history = original

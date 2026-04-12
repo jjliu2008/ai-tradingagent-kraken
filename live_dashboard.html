@@ -1,83 +1,144 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Universe Scanner — Live Dashboard</title>
+<title>Universe Scanner - Live Dashboard</title>
 <meta http-equiv="refresh" content="30">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --muted: #8b949e;
-          --text: #e6edf3; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922; }
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --muted: #8b949e;
+    --text: #e6edf3;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-         background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh; }
-  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
   header h1 { color: var(--accent); font-size: 20px; }
-  .status-badge { background: var(--green); color: #000; font-size: 11px; font-weight: 700;
-                  padding: 3px 8px; border-radius: 12px; }
-  .status-badge.offline { background: var(--red); }
+  .status-badge {
+    background: var(--green);
+    color: #000;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 12px;
+  }
+  .status-badge.offline { background: var(--red); color: #fff; }
+  .status-badge.backtest { background: var(--yellow); color: #111; }
   .last-update { font-size: 11px; color: var(--muted); margin-top: 3px; }
-  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
   .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; }
   .kpi .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
-  .pos { color: var(--green); } .neg { color: var(--red); } .neu { color: var(--accent); }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .neu { color: var(--accent); }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
-  @media(max-width:700px){ .row { grid-template-columns: 1fr; } }
+  @media(max-width:700px) { .row { grid-template-columns: 1fr; } }
   .chart-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px; }
-  .chart-title { font-size: 12px; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  .chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .chart-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .5px;
-       padding: 6px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+  th {
+    color: var(--muted);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: .5px;
+    padding: 6px 12px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+  }
   th:first-child { text-align: left; }
   td { padding: 7px 12px; text-align: right; border-bottom: 1px solid #21262d; }
   td:first-child { text-align: left; font-weight: 500; }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: #1c2128; }
-  .pill { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px;
-          background: #21262d; color: var(--muted); }
-  .pill.open { background: rgba(63,185,80,0.15); color: var(--green); }
+  .pill {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #21262d;
+    color: var(--muted);
+  }
+  .pill.open { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .pill.backtest { background: rgba(210, 153, 34, 0.16); color: var(--yellow); }
   #no-data { text-align: center; padding: 60px; color: var(--muted); }
   #no-data h2 { font-size: 16px; margin-bottom: 8px; }
-  #no-data code { background: #21262d; padding: 8px 14px; border-radius: 6px; display: block;
-                  margin: 12px auto; max-width: 600px; color: #79c0ff; font-size: 13px; }
+  #no-data code {
+    background: #21262d;
+    padding: 8px 14px;
+    border-radius: 6px;
+    display: block;
+    margin: 12px auto;
+    max-width: 600px;
+    color: #79c0ff;
+    font-size: 13px;
+  }
 </style>
 </head>
 <body>
 
 <header>
   <div>
-    <h1>🤖 Universe Scanner — Live Dashboard</h1>
-    <div class="last-update" id="last-update">Loading…</div>
+    <h1>Universe Scanner - Live Dashboard</h1>
+    <div class="last-update" id="last-update">Loading...</div>
   </div>
   <span class="status-badge" id="status">LOADING</span>
 </header>
 
 <div id="no-data" style="display:none">
-  <h2>No live data yet</h2>
-  <p>Start the trading agent to see the real-time equity curve:</p>
-  <code>python universe_scanner_agent.py --mode paper --reset-paper --poll 60 --interval 15</code>
+  <h2>No dashboard data yet</h2>
+  <p>Start the trading agent or generate the demo backtest snapshot:</p>
+  <code>python universe_scanner_agent.py --mode paper --strategy-mode research --use-research-universe --max-pos 6 --poll 60 --interval 15</code>
   <p style="margin-top:16px;font-size:13px">This dashboard auto-refreshes every 30 seconds.</p>
 </div>
 
 <div id="main-content" style="display:none">
 
 <div class="kpi-grid">
-  <div class="kpi"><div class="label">Total P&amp;L</div><div class="value" id="kpi-pnl">$0.00</div></div>
-  <div class="kpi"><div class="label">Realized</div><div class="value" id="kpi-realized">$0.00</div></div>
-  <div class="kpi"><div class="label">Unrealized</div><div class="value" id="kpi-unrealized">$0.00</div></div>
-  <div class="kpi"><div class="label">Win Rate</div><div class="value neu" id="kpi-wr">—</div></div>
-  <div class="kpi"><div class="label">Trades Done</div><div class="value neu" id="kpi-trades">0</div></div>
-  <div class="kpi"><div class="label">Open Positions</div><div class="value neu" id="kpi-open">0</div></div>
+  <div class="kpi"><div class="label" id="label-pnl">Total P&amp;L</div><div class="value" id="kpi-pnl">$0.00</div></div>
+  <div class="kpi"><div class="label" id="label-realized">Realized</div><div class="value" id="kpi-realized">$0.00</div></div>
+  <div class="kpi"><div class="label" id="label-unrealized">Unrealized</div><div class="value" id="kpi-unrealized">$0.00</div></div>
+  <div class="kpi"><div class="label" id="label-wr">Win Rate</div><div class="value neu" id="kpi-wr">--</div></div>
+  <div class="kpi"><div class="label" id="label-trades">Trades Done</div><div class="value neu" id="kpi-trades">0</div></div>
+  <div class="kpi"><div class="label" id="label-open">Open Positions</div><div class="value neu" id="kpi-open">0</div></div>
 </div>
 
 <div class="row">
   <div class="chart-wrap">
-    <div class="chart-title">Equity Curve (mark-to-market)</div>
+    <div class="chart-head">
+      <div class="chart-title" id="chart-title">Equity Curve (mark-to-market)</div>
+      <span class="pill backtest" id="chart-mode-pill" style="display:none"></span>
+    </div>
     <canvas id="equity-chart" height="180"></canvas>
   </div>
   <div class="chart-wrap">
-    <div class="chart-title">Open Positions</div>
+    <div class="chart-head">
+      <div class="chart-title" id="positions-title">Open Positions</div>
+    </div>
     <div id="positions-panel" style="padding-top:8px">
       <p style="color:var(--muted);font-size:13px;text-align:center;padding:40px 0">No open positions</p>
     </div>
@@ -85,7 +146,9 @@
 </div>
 
 <div class="chart-wrap">
-  <div class="chart-title">Trade History</div>
+  <div class="chart-head">
+    <div class="chart-title" id="trade-title">Trade History</div>
+  </div>
   <table>
     <thead>
       <tr><th>Pair</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Reason</th><th>Signals</th></tr>
@@ -94,148 +157,351 @@
   </table>
 </div>
 
-</div><!-- #main-content -->
+</div>
 
 <script>
-// ── Load pnl_curve.jsonl via fetch (works with python -m http.server) ────────
-const DATA_PATH = 'runtime/universe/pnl_curve.jsonl';
+const DATA_PATH = "runtime/universe/pnl_curve.jsonl";
+const BACKTEST_PATH = "results/latest/demo_backtest_chart.json";
 
 let equityChart = null;
 
-function formatUSD(v) {
-  const s = Math.abs(v).toFixed(2);
-  return (v >= 0 ? '+$' : '-$') + s;
+function formatUSD(value) {
+  const amount = Number(value || 0);
+  const sign = amount >= 0 ? "+$" : "-$";
+  return sign + Math.abs(amount).toFixed(2);
 }
 
-function colorClass(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'; }
+function formatPercent(value) {
+  const amount = Number(value || 0);
+  const sign = amount >= 0 ? "+" : "-";
+  return sign + Math.abs(amount * 100).toFixed(2) + "%";
+}
+
+function colorClass(value) {
+  return value > 0 ? "pos" : value < 0 ? "neg" : "neu";
+}
+
+function parseTimestampSeconds(row) {
+  if (!row) return NaN;
+  if (typeof row.ts === "number" && Number.isFinite(row.ts)) return row.ts;
+  if (typeof row.ts === "string" && row.ts) {
+    const parsed = Date.parse(row.ts);
+    if (!Number.isNaN(parsed)) return parsed / 1000;
+    const numeric = Number(row.ts);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  if (typeof row.ts_iso === "string" && row.ts_iso) {
+    const parsedIso = Date.parse(row.ts_iso);
+    if (!Number.isNaN(parsedIso)) return parsedIso / 1000;
+  }
+  return NaN;
+}
+
+function formatClock(tsSeconds) {
+  if (!Number.isFinite(tsSeconds)) return "--";
+  return new Date(tsSeconds * 1000).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatDateLabel(tsSeconds) {
+  if (!Number.isFinite(tsSeconds)) return "--";
+  return new Date(tsSeconds * 1000).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function liveRowTotalPnl(row) {
+  return Number(row.total_pnl_usd ?? row.total_usd ?? row.equity ?? 0) || 0;
+}
+
+function liveRowOpenCount(row) {
+  if (Array.isArray(row.open_positions)) return row.open_positions.length;
+  return Number(row.n_open ?? row.open_positions ?? 0) || 0;
+}
+
+function hasMeaningfulLiveActivity(rows) {
+  return rows.some((row) =>
+    Number(row.n_trades ?? 0) > 0 ||
+    liveRowOpenCount(row) > 0 ||
+    Math.abs(liveRowTotalPnl(row)) > 0.0001 ||
+    (Array.isArray(row.recent_trades) && row.recent_trades.length > 0)
+  );
+}
+
+function setStatus(text, modeClass) {
+  const status = document.getElementById("status");
+  status.textContent = text;
+  status.className = "status-badge";
+  if (modeClass) status.classList.add(modeClass);
+}
+
+function setKpi(slot, label, value, valueClass) {
+  document.getElementById("label-" + slot).textContent = label;
+  const valueEl = document.getElementById("kpi-" + slot);
+  valueEl.textContent = value;
+  valueEl.className = "value " + (valueClass || "neu");
+}
+
+function setSectionTitles(chartTitle, positionsTitle, tradeTitle, pillText) {
+  document.getElementById("chart-title").textContent = chartTitle;
+  document.getElementById("positions-title").textContent = positionsTitle;
+  document.getElementById("trade-title").textContent = tradeTitle;
+  const pill = document.getElementById("chart-mode-pill");
+  if (pillText) {
+    pill.textContent = pillText;
+    pill.style.display = "";
+  } else {
+    pill.textContent = "";
+    pill.style.display = "none";
+  }
+}
+
+function renderChart(labels, data, kind) {
+  const isPercent = kind === "pct";
+  const datasetLabel = isPercent ? "Net Return (%)" : "Equity ($)";
+  const borderColor = isPercent ? "#3fb950" : "#58a6ff";
+  const backgroundColor = isPercent ? "rgba(63,185,80,0.08)" : "rgba(88,166,255,0.06)";
+
+  if (equityChart) {
+    equityChart.destroy();
+  }
+
+  equityChart = new Chart(document.getElementById("equity-chart"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: datasetLabel,
+        data,
+        borderColor,
+        backgroundColor,
+        borderWidth: 1.8,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.15,
+      }],
+    },
+    options: {
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => isPercent ? ctx.raw.toFixed(2) + "%" : "$" + ctx.raw.toFixed(2),
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: "#8b949e", maxTicksLimit: 8, font: { size: 10 } },
+          grid: { color: "#21262d" },
+        },
+        y: {
+          ticks: {
+            color: "#8b949e",
+            callback: (value) => isPercent ? Number(value).toFixed(0) + "%" : "$" + Number(value).toFixed(0),
+          },
+          grid: { color: "#21262d" },
+        },
+      },
+    },
+  });
+}
+
+function showMainContent() {
+  document.getElementById("no-data").style.display = "none";
+  document.getElementById("main-content").style.display = "";
+}
+
+function renderLive(rows) {
+  showMainContent();
+  setStatus("LIVE", "");
+  setSectionTitles("Equity Curve (mark-to-market)", "Open Positions", "Trade History", "");
+
+  const last = rows[rows.length - 1];
+  const lastTs = parseTimestampSeconds(last);
+  document.getElementById("last-update").textContent = "Last update: " + formatClock(lastTs);
+
+  const totalPnl = liveRowTotalPnl(last);
+  const realized = Number(last.realized_usd ?? 0) || 0;
+  const unrealized = Number(last.unrealized_usd ?? 0) || 0;
+  const nTrades = Number(last.n_trades ?? 0) || 0;
+  const nWins = Number(last.n_wins ?? 0) || 0;
+  const nOpen = liveRowOpenCount(last);
+  const winRate = nTrades > 0 ? (nWins / nTrades * 100).toFixed(0) + "%" : "--";
+
+  setKpi("pnl", "Total P&L", formatUSD(totalPnl), colorClass(totalPnl));
+  setKpi("realized", "Realized", formatUSD(realized), colorClass(realized));
+  setKpi("unrealized", "Unrealized", formatUSD(unrealized), colorClass(unrealized));
+  setKpi("wr", "Win Rate", winRate, "neu");
+  setKpi("trades", "Trades Done", String(nTrades), "neu");
+  setKpi("open", "Open Positions", String(nOpen), "neu");
+
+  const sampledRows = rows
+    .map((row) => ({ ...row, _ts: parseTimestampSeconds(row) }))
+    .filter((row) => Number.isFinite(row._ts));
+  const step = Math.max(1, Math.floor(sampledRows.length / 500));
+  const sampled = sampledRows.filter((_, index) => index % step === 0);
+  const labels = sampled.map((row) => formatDateLabel(row._ts));
+  const data = sampled.map((row) => Number(liveRowTotalPnl(row).toFixed(4)));
+  renderChart(labels, data, "usd");
+
+  const positions = Array.isArray(last.open_positions) ? last.open_positions : [];
+  const positionsPanel = document.getElementById("positions-panel");
+  if (!positions.length) {
+    positionsPanel.innerHTML = "<p style=\"color:var(--muted);font-size:13px;text-align:center;padding:40px 0\">No open positions</p>";
+  } else {
+    positionsPanel.innerHTML = positions.map((position) => {
+      const unrealizedPct = Number(position.unrealized_pnl_pct ?? 0) || 0;
+      const cls = unrealizedPct >= 0 ? "pos" : "neg";
+      return `
+        <div style="padding:10px;border-bottom:1px solid #21262d;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span style="font-weight:600">${position.pair}</span>
+            <span class="pill open" style="margin-left:6px">OPEN</span>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">${(position.conditions || []).join(", ")}</div>
+          </div>
+          <div style="text-align:right">
+            <div class="${cls}" style="font-size:15px;font-weight:600">${(unrealizedPct * 100 >= 0 ? "+" : "") + (unrealizedPct * 100).toFixed(2)}%</div>
+            <div style="font-size:11px;color:var(--muted)">entry ${(Number(position.entry_price ?? 0) || 0).toFixed(4)}</div>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  const trades = (Array.isArray(last.recent_trades) ? last.recent_trades : []).slice(-20).reverse();
+  const tradeTable = document.getElementById("trade-table");
+  tradeTable.innerHTML = trades.map((trade) => {
+    const pnlValue = Number(trade.pnl_usd ?? trade.pnl_net ?? 0) || 0;
+    const cls = pnlValue >= 0 ? "pos" : "neg";
+    return `<tr>
+      <td>${trade.pair ?? "--"}</td>
+      <td>${(Number(trade.entry_price ?? 0) || 0).toFixed(4)}</td>
+      <td>${(Number(trade.exit_price ?? 0) || 0).toFixed(4)}</td>
+      <td class="${cls}">${formatUSD(pnlValue)}</td>
+      <td><span class="pill">${trade.reason ?? "--"}</span></td>
+      <td style="font-size:10px;color:var(--muted)">${(trade.signals || []).join(", ")}</td>
+    </tr>`;
+  }).join("") || "<tr><td colspan=\"6\" style=\"text-align:center;color:var(--muted);padding:20px\">No trades yet</td></tr>";
+}
+
+function renderBacktest(payload) {
+  showMainContent();
+  setStatus("BACKTEST", "backtest");
+  setSectionTitles("Backtest Curve (current research book)", "Demo Book", "Recent Backtest Trades", "DEMO MODE");
+
+  const generatedLabel = payload.generated_at_iso
+    ? new Date(payload.generated_at_iso).toLocaleString("en-US")
+    : formatDateLabel(Number(payload.window_end_ts || 0));
+  document.getElementById("last-update").textContent = "Backtest snapshot: " + generatedLabel;
+
+  const full = payload.full || {};
+  const older60 = payload.older60 || {};
+  const recent60 = payload.recent60 || {};
+
+  setKpi("pnl", "120d Return", formatPercent(full.net_pct || 0), colorClass(full.net_pct || 0));
+  setKpi("realized", "Older 60d", formatPercent(older60.net_pct || 0), colorClass(older60.net_pct || 0));
+  setKpi("unrealized", "Recent 60d", formatPercent(recent60.net_pct || 0), colorClass(recent60.net_pct || 0));
+  setKpi("wr", "Max Drawdown", formatPercent(full.max_dd_pct || 0), colorClass(full.max_dd_pct || 0));
+  setKpi("trades", "Trades", String(full.trades || 0), "neu");
+  setKpi("open", "Active Pairs", String((payload.pair_names || []).length), "neu");
+
+  const curve = Array.isArray(payload.equity_curve) ? payload.equity_curve : [];
+  const labels = curve.map((point) => formatDateLabel(parseTimestampSeconds(point)));
+  const data = curve.map((point) => (Number(point.net_pct ?? 0) || 0) * 100);
+  renderChart(labels, data, "pct");
+
+  const positionsPanel = document.getElementById("positions-panel");
+  const pairPlans = Array.isArray(payload.pair_plans) ? payload.pair_plans : [];
+  const pairRows = pairPlans.map((plan) => `
+    <div style="padding:10px;border-bottom:1px solid #21262d;display:flex;justify-content:space-between;align-items:flex-start">
+      <div>
+        <span style="font-weight:600">${plan.pair}</span>
+        <span class="pill backtest" style="margin-left:6px">${plan.status}</span>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">${plan.construction} / ${plan.entry_filter} / ${plan.exit_profile}</div>
+      </div>
+    </div>
+  `).join("");
+  positionsPanel.innerHTML = `
+    <div style="padding:0 0 12px 0;color:var(--muted);font-size:12px">
+      Live runtime is flat, so the dashboard is showing the current 120-day research-book backtest instead.
+    </div>
+    ${pairRows || "<p style=\"color:var(--muted);font-size:13px;text-align:center;padding:20px 0\">No active pair plans found</p>"}
+  `;
+
+  const recentTrades = (Array.isArray(payload.recent_trades) ? payload.recent_trades.slice() : []).reverse();
+  const tradeTable = document.getElementById("trade-table");
+  tradeTable.innerHTML = recentTrades.map((trade) => {
+    const pnlPct = Number(trade.pnl_pct ?? 0) || 0;
+    const cls = pnlPct >= 0 ? "pos" : "neg";
+    return `<tr>
+      <td>${trade.pair ?? "--"}</td>
+      <td>${(Number(trade.entry_price ?? 0) || 0).toFixed(4)}</td>
+      <td>${(Number(trade.exit_price ?? 0) || 0).toFixed(4)}</td>
+      <td class="${cls}">${formatPercent(pnlPct)}</td>
+      <td><span class="pill">${trade.exit_reason ?? "--"}</span></td>
+      <td style="font-size:10px;color:var(--muted)">${trade.construction ?? "--"}</td>
+    </tr>`;
+  }).join("") || "<tr><td colspan=\"6\" style=\"text-align:center;color:var(--muted);padding:20px\">No backtest trades yet</td></tr>";
+}
+
+async function fetchJsonLines(path) {
+  const response = await fetch(path + "?t=" + Date.now());
+  if (!response.ok) throw new Error("not found");
+  const text = await response.text();
+  const lines = text.trim().split("\n").filter(Boolean);
+  if (!lines.length) throw new Error("empty");
+  return lines.map((line) => JSON.parse(line));
+}
+
+async function fetchJson(path) {
+  const response = await fetch(path + "?t=" + Date.now());
+  if (!response.ok) throw new Error("not found");
+  return response.json();
+}
 
 async function loadData() {
   try {
-    const resp = await fetch(DATA_PATH + '?t=' + Date.now());
-    if (!resp.ok) throw new Error('not found');
-    const text = await resp.text();
-    const lines = text.trim().split('\n').filter(Boolean);
-    if (!lines.length) throw new Error('empty');
-
-    const rows = lines.map(l => JSON.parse(l));
-    document.getElementById('no-data').style.display = 'none';
-    document.getElementById('main-content').style.display = '';
-    document.getElementById('status').textContent = 'LIVE';
-    document.getElementById('status').classList.remove('offline');
-
-    const last = rows[rows.length - 1];
-    document.getElementById('last-update').textContent =
-      'Last update: ' + new Date(last.ts * 1000).toLocaleTimeString();
-
-    // KPIs
-    const totalPnl  = last.total_pnl_usd ?? last.equity ?? 0;
-    const realized  = last.realized_usd ?? 0;
-    const unrealized = last.unrealized_usd ?? 0;
-    const nTrades   = last.n_trades ?? 0;
-    const nWins     = last.n_wins ?? 0;
-    const nOpen     = last.n_open ?? 0;
-    const wr = nTrades > 0 ? (nWins / nTrades * 100).toFixed(0) + '%' : '—';
-
-    const pnlEl = document.getElementById('kpi-pnl');
-    pnlEl.textContent = formatUSD(totalPnl);
-    pnlEl.className = 'value ' + colorClass(totalPnl);
-    const realEl = document.getElementById('kpi-realized');
-    realEl.textContent = formatUSD(realized);
-    realEl.className = 'value ' + colorClass(realized);
-    const unrealEl = document.getElementById('kpi-unrealized');
-    unrealEl.textContent = formatUSD(unrealized);
-    unrealEl.className = 'value ' + colorClass(unrealized);
-    document.getElementById('kpi-wr').textContent = wr;
-    document.getElementById('kpi-trades').textContent = nTrades;
-    document.getElementById('kpi-open').textContent = nOpen;
-
-    // Equity chart
-    const step = Math.max(1, Math.floor(rows.length / 500));
-    const sampled = rows.filter((_, i) => i % step === 0);
-    const labels = sampled.map(r => new Date(r.ts * 1000).toLocaleDateString('en-US', {month:'short', day:'numeric'}));
-    const data   = sampled.map(r => +(r.total_pnl_usd ?? r.equity ?? 0).toFixed(4));
-
-    if (!equityChart) {
-      equityChart = new Chart(document.getElementById('equity-chart'), {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [{
-            label: 'Equity ($)',
-            data,
-            borderColor: '#58a6ff',
-            backgroundColor: 'rgba(88,166,255,0.06)',
-            borderWidth: 1.5,
-            fill: true,
-            pointRadius: 0,
-            tension: 0.15,
-          }]
-        },
-        options: {
-          animation: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: { callbacks: { label: ctx => '$' + ctx.raw.toFixed(2) } },
-          },
-          scales: {
-            x: { ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } },
-                 grid: { color: '#21262d' } },
-            y: { ticks: { color: '#8b949e', callback: v => '$' + v.toFixed(0) },
-                 grid: { color: '#21262d' } },
-          },
-        }
-      });
-    } else {
-      equityChart.data.labels = labels;
-      equityChart.data.datasets[0].data = data;
-      equityChart.update('none');
+    let liveRows = [];
+    try {
+      liveRows = await fetchJsonLines(DATA_PATH);
+    } catch (error) {
+      liveRows = [];
     }
 
-    // Positions panel
-    const positions = (last.open_positions ?? []);
-    const posPanel = document.getElementById('positions-panel');
-    if (positions.length === 0) {
-      posPanel.innerHTML = '<p style="color:var(--muted);font-size:13px;text-align:center;padding:40px 0">No open positions</p>';
-    } else {
-      posPanel.innerHTML = positions.map(p => {
-        const upnl = p.unrealized_pnl_pct ?? 0;
-        const cls  = upnl >= 0 ? 'pos' : 'neg';
-        return `
-          <div style="padding:10px;border-bottom:1px solid #21262d;display:flex;justify-content:space-between;align-items:center">
-            <div>
-              <span style="font-weight:600">${p.pair}</span>
-              <span class="pill open" style="margin-left:6px">OPEN</span>
-              <div style="font-size:11px;color:var(--muted);margin-top:3px">${(p.conditions??[]).join(', ')}</div>
-            </div>
-            <div style="text-align:right">
-              <div class="${cls}" style="font-size:15px;font-weight:600">${(upnl*100>=0?'+':'')}${(upnl*100).toFixed(2)}%</div>
-              <div style="font-size:11px;color:var(--muted)">entry ${(p.entry_price??0).toFixed(4)}</div>
-            </div>
-          </div>`;
-      }).join('');
+    if (liveRows.length && hasMeaningfulLiveActivity(liveRows)) {
+      renderLive(liveRows);
+      return;
     }
 
-    // Trade table
-    const trades = (last.recent_trades ?? []).slice(-20).reverse();
-    const tbody   = document.getElementById('trade-table');
-    tbody.innerHTML = trades.map(t => {
-      const cls = (t.pnl_net ?? 0) >= 0 ? 'pos' : 'neg';
-      return `<tr>
-        <td>${t.pair ?? '—'}</td>
-        <td>${(t.entry_price ?? 0).toFixed(4)}</td>
-        <td>${(t.exit_price ?? 0).toFixed(4)}</td>
-        <td class="${cls}">${formatUSD(t.pnl_usd ?? t.pnl_net ?? 0)}</td>
-        <td><span class="pill">${t.reason ?? '—'}</span></td>
-        <td style="font-size:10px;color:var(--muted)">${(t.signals ?? []).join(', ')}</td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No trades yet</td></tr>';
+    try {
+      const backtestPayload = await fetchJson(BACKTEST_PATH);
+      if (Array.isArray(backtestPayload.equity_curve) && backtestPayload.equity_curve.length) {
+        renderBacktest(backtestPayload);
+        return;
+      }
+    } catch (error) {
+      if (liveRows.length) {
+        renderLive(liveRows);
+        return;
+      }
+    }
 
-  } catch (err) {
-    document.getElementById('no-data').style.display = '';
-    document.getElementById('main-content').style.display = 'none';
-    document.getElementById('status').textContent = 'OFFLINE';
-    document.getElementById('status').classList.add('offline');
-    document.getElementById('last-update').textContent = 'Agent not running — ' + err.message;
+    if (liveRows.length) {
+      renderLive(liveRows);
+      return;
+    }
+
+    throw new Error("no live or backtest data");
+  } catch (error) {
+    document.getElementById("no-data").style.display = "";
+    document.getElementById("main-content").style.display = "none";
+    setStatus("OFFLINE", "offline");
+    document.getElementById("last-update").textContent = "Dashboard unavailable - " + error.message;
   }
 }
 

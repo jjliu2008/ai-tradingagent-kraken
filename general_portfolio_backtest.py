@@ -16,6 +16,10 @@ RESULTS_DIR = Path("results")
 UNIFORM_CACHE_DIR = Path("data_cache_walkforward")
 
 
+def _ts_iso(ts: int) -> str:
+    return pd.Timestamp(int(ts), unit="s", tz="UTC").isoformat()
+
+
 def _summarize(trades: list[bt.BacktestTrade]) -> dict[str, Any]:
     if not trades:
         return {
@@ -65,6 +69,66 @@ def _summarize_with_split(
         **{f"older60_{k}": v for k, v in older_stats.items()},
         **{f"recent60_{k}": v for k, v in recent_stats.items()},
     }
+
+
+def _serialize_trade(trade: bt.BacktestTrade) -> dict[str, Any]:
+    return {
+        "pair": trade.pair,
+        "construction": trade.construction,
+        "entry_ts": int(trade.entry_ts),
+        "entry_ts_iso": _ts_iso(trade.entry_ts),
+        "entry_price": float(trade.entry_price),
+        "exit_ts": int(trade.exit_ts),
+        "exit_ts_iso": _ts_iso(trade.exit_ts),
+        "exit_price": float(trade.exit_price),
+        "exit_reason": trade.exit_reason,
+        "pnl_pct": float(trade.pnl_pct),
+        "bars_held": int(trade.bars_held),
+        "signal_score": float(trade.signal_score),
+    }
+
+
+def _build_equity_curve(
+    trades: list[bt.BacktestTrade],
+    start_ts: int,
+    end_ts: int,
+) -> list[dict[str, Any]]:
+    ordered = sorted(trades, key=lambda trade: (trade.exit_ts, trade.entry_ts, trade.pair))
+    if not ordered:
+        if start_ts and end_ts and end_ts >= start_ts:
+            return [
+                {"ts": int(start_ts), "ts_iso": _ts_iso(start_ts), "net_pct": 0.0, "trade_count": 0},
+                {"ts": int(end_ts), "ts_iso": _ts_iso(end_ts), "net_pct": 0.0, "trade_count": 0},
+            ]
+        return []
+
+    anchor_ts = int(start_ts or ordered[0].entry_ts or ordered[0].exit_ts)
+    curve: list[dict[str, Any]] = [
+        {"ts": anchor_ts, "ts_iso": _ts_iso(anchor_ts), "net_pct": 0.0, "trade_count": 0}
+    ]
+    running_net_pct = 0.0
+    for idx, trade in enumerate(ordered, start=1):
+        running_net_pct += float(trade.pnl_pct)
+        curve.append(
+            {
+                "ts": int(trade.exit_ts),
+                "ts_iso": _ts_iso(trade.exit_ts),
+                "net_pct": running_net_pct,
+                "trade_count": idx,
+                "pair": trade.pair,
+                "exit_reason": trade.exit_reason,
+            }
+        )
+    if end_ts and curve[-1]["ts"] < int(end_ts):
+        curve.append(
+            {
+                "ts": int(end_ts),
+                "ts_iso": _ts_iso(end_ts),
+                "net_pct": running_net_pct,
+                "trade_count": len(ordered),
+            }
+        )
+    return curve
 
 
 def _write_cache(pair: str, interval: int, history_days: int, df: pd.DataFrame) -> Path:
@@ -117,6 +181,7 @@ def run_portfolio_backtest(
     all_trades: list[bt.BacktestTrade] = []
     recent_30_trades: list[bt.BacktestTrade] = []
     recent_14_trades: list[bt.BacktestTrade] = []
+    min_ts = 0
     max_ts = 0
 
     for pair in pairs:
@@ -131,6 +196,8 @@ def run_portfolio_backtest(
         )
         if df_raw.empty:
             continue
+        first_ts = int(df_raw["ts"].iloc[0])
+        min_ts = first_ts if min_ts == 0 else min(min_ts, first_ts)
         max_ts = max(max_ts, int(df_raw["ts"].iloc[-1]))
         frame = rr.build_research_frame(df_raw, plan)
         trades = bt.run_backtest_frame(
@@ -185,15 +252,37 @@ def run_portfolio_backtest(
         pair_frame = pair_frame.sort_values("full_net_pct", ascending=False).reset_index(drop=True)
 
     summary = {
+        "generated_at_iso": pd.Timestamp.now(tz="UTC").isoformat(),
         "history_days": history_days,
         "interval_minutes": interval,
         "active_pairs": int(len(pair_frame)),
+        "pair_names": [pair for pair in pairs if pair in PAIR_RESEARCH_REGISTRY],
+        "pair_plans": [
+            {
+                "pair": pair,
+                "status": PAIR_RESEARCH_REGISTRY[pair].status,
+                "construction": PAIR_RESEARCH_REGISTRY[pair].construction,
+                "entry_filter": PAIR_RESEARCH_REGISTRY[pair].entry_filter,
+                "exit_profile": PAIR_RESEARCH_REGISTRY[pair].exit_profile,
+            }
+            for pair in pairs
+            if pair in PAIR_RESEARCH_REGISTRY
+        ],
+        "window_start_ts": int(min_ts),
         "window_end_ts": int(max_ts),
+        "window_start_ts_iso": _ts_iso(min_ts) if min_ts else "",
+        "window_end_ts_iso": _ts_iso(max_ts) if max_ts else "",
         "portfolio_regime_gate": rr.PORTFOLIO_REGIME_GATE,
         "full": _summarize(all_trades),
         "recent30": _summarize(recent_30_trades),
         "recent14": _summarize(recent_14_trades),
         "split_ts": int(split_ts),
+        "split_ts_iso": _ts_iso(split_ts) if split_ts else "",
+        "equity_curve": _build_equity_curve(all_trades, min_ts, max_ts),
+        "recent_trades": [
+            _serialize_trade(trade)
+            for trade in sorted(all_trades, key=lambda trade: (trade.exit_ts, trade.entry_ts, trade.pair))[-20:]
+        ],
     }
     split_summary = _summarize_with_split(all_trades, split_ts)
     summary["older60"] = {

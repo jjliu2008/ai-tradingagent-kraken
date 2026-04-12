@@ -1,0 +1,615 @@
+{
+  "generated_at_iso": "2026-04-12T15:30:18.026225+00:00",
+  "history_days": 120,
+  "interval_minutes": 15,
+  "active_pairs": 6,
+  "pair_names": [
+    "GIGAUSD",
+    "ZECUSD",
+    "FHEUSD",
+    "KERNELUSD",
+    "HOUSEUSD",
+    "BABYUSD"
+  ],
+  "pair_plans": [
+    {
+      "pair": "GIGAUSD",
+      "status": "active_frozen",
+      "construction": "tc15_tighter_volume_cap",
+      "entry_filter": "base",
+      "exit_profile": "base"
+    },
+    {
+      "pair": "ZECUSD",
+      "status": "active_experimental",
+      "construction": "union_volhi",
+      "entry_filter": "close80_volcap60",
+      "exit_profile": "runner"
+    },
+    {
+      "pair": "FHEUSD",
+      "status": "active_experimental",
+      "construction": "trend_gate",
+      "entry_filter": "gate50_vwap3",
+      "exit_profile": "runner"
+    },
+    {
+      "pair": "KERNELUSD",
+      "status": "active",
+      "construction": "union_closehi",
+      "entry_filter": "close80_volcap60",
+      "exit_profile": "runner"
+    },
+    {
+      "pair": "HOUSEUSD",
+      "status": "active",
+      "construction": "trend_gate",
+      "entry_filter": "gate50_vwap3",
+      "exit_profile": "runner"
+    },
+    {
+      "pair": "BABYUSD",
+      "status": "active",
+      "construction": "tc15_cap_or_mb60",
+      "entry_filter": "base",
+      "exit_profile": "fast"
+    }
+  ],
+  "window_start_ts": 1765233000,
+  "window_end_ts": 1775670300,
+  "window_start_ts_iso": "2025-12-08T22:30:00+00:00",
+  "window_end_ts_iso": "2026-04-08T17:45:00+00:00",
+  "portfolio_regime_gate": {
+    "min_gate_trend_strength_60": 0.006,
+    "min_atr_pct": 0.006
+  },
+  "full": {
+    "trades": 27,
+    "net_pct": 0.3870090870304121,
+    "win_rate": 0.5185185185185185,
+    "avg_trade_pct": 0.014333669890015263,
+    "max_dd_pct": -0.041859529437750176
+  },
+  "recent30": {
+    "trades": 12,
+    "net_pct": 0.23764806204607383,
+    "win_rate": 0.5833333333333334,
+    "avg_trade_pct": 0.019804005170506154,
+    "max_dd_pct": -0.042582711726176226
+  },
+  "recent14": {
+    "trades": 7,
+    "net_pct": 0.1514562231059585,
+    "win_rate": 0.5714285714285714,
+    "avg_trade_pct": 0.021636603300851213,
+    "max_dd_pct": -0.04258271172617634
+  },
+  "split_ts": 1770486300,
+  "split_ts_iso": "2026-02-07T17:45:00+00:00",
+  "equity_curve": [
+    {
+      "ts": 1765233000,
+      "ts_iso": "2025-12-08T22:30:00+00:00",
+      "net_pct": 0.0,
+      "trade_count": 0
+    },
+    {
+      "ts": 1766017800,
+      "ts_iso": "2025-12-18T00:30:00+00:00",
+      "net_pct": -0.02115350000000006,
+      "trade_count": 1,
+      "pair": "FHEUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1766195100,
+      "ts_iso": "2025-12-20T01:45:00+00:00",
+      "net_pct": -0.04230700000000008,
+      "trade_count": 2,
+      "pair": "HOUSEUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1767648600,
+      "ts_iso": "2026-01-05T21:30:00+00:00",
+      "net_pct": -0.06346050000000018,
+      "trade_count": 3,
+      "pair": "FHEUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1768415400,
+      "ts_iso": "2026-01-14T18:30:00+00:00",
+      "net_pct": -0.08461400000000019,
+      "trade_count": 4,
+      "pair": "ZECUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1768802400,
+      "ts_iso": "2026-01-19T06:00:00+00:00",
+      "net_pct": -0.03598450000000029,
+      "trade_count": 5,
+      "pair": "FHEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1769302800,
+      "ts_iso": "2026-01-25T01:00:00+00:00",
+      "net_pct": 0.012644999999999684,
+      "trade_count": 6,
+      "pair": "KERNELUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1769442300,
+      "ts_iso": "2026-01-26T15:45:00+00:00",
+      "net_pct": -0.008508500000000394,
+      "trade_count": 7,
+      "pair": "ZECUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1769589000,
+      "ts_iso": "2026-01-28T08:30:00+00:00",
+      "net_pct": 0.040120999999999477,
+      "trade_count": 8,
+      "pair": "FHEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1769943600,
+      "ts_iso": "2026-02-01T11:00:00+00:00",
+      "net_pct": 0.03982598590588765,
+      "trade_count": 9,
+      "pair": "FHEUSD",
+      "exit_reason": "TREND_LOST"
+    },
+    {
+      "ts": 1771006500,
+      "ts_iso": "2026-02-13T18:15:00+00:00",
+      "net_pct": 0.08845548590588755,
+      "trade_count": 10,
+      "pair": "ZECUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1771363800,
+      "ts_iso": "2026-02-17T21:30:00+00:00",
+      "net_pct": 0.13708498590588736,
+      "trade_count": 11,
+      "pair": "HOUSEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1771375500,
+      "ts_iso": "2026-02-18T00:45:00+00:00",
+      "net_pct": 0.11593148590588737,
+      "trade_count": 12,
+      "pair": "FHEUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1772046900,
+      "ts_iso": "2026-02-25T19:15:00+00:00",
+      "net_pct": 0.12188502498433831,
+      "trade_count": 13,
+      "pair": "GIGAUSD",
+      "exit_reason": "TREND_LOST"
+    },
+    {
+      "ts": 1772587800,
+      "ts_iso": "2026-03-04T01:30:00+00:00",
+      "net_pct": 0.10073152498433836,
+      "trade_count": 14,
+      "pair": "HOUSEUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1772724600,
+      "ts_iso": "2026-03-05T15:30:00+00:00",
+      "net_pct": 0.14936102498433826,
+      "trade_count": 15,
+      "pair": "FHEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1773084600,
+      "ts_iso": "2026-03-09T19:30:00+00:00",
+      "net_pct": 0.1730680249843383,
+      "trade_count": 16,
+      "pair": "BABYUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1773107100,
+      "ts_iso": "2026-03-10T01:45:00+00:00",
+      "net_pct": 0.2216975249843383,
+      "trade_count": 17,
+      "pair": "HOUSEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1773452700,
+      "ts_iso": "2026-03-14T01:45:00+00:00",
+      "net_pct": 0.20054402498433832,
+      "trade_count": 18,
+      "pair": "FHEUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1774336500,
+      "ts_iso": "2026-03-24T07:15:00+00:00",
+      "net_pct": 0.18692336392445352,
+      "trade_count": 19,
+      "pair": "FHEUSD",
+      "exit_reason": "TREND_LOST"
+    },
+    {
+      "ts": 1774344600,
+      "ts_iso": "2026-03-24T09:30:00+00:00",
+      "net_pct": 0.23555286392445357,
+      "trade_count": 20,
+      "pair": "FHEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1774960200,
+      "ts_iso": "2026-03-31T12:30:00+00:00",
+      "net_pct": 0.21439936392445358,
+      "trade_count": 21,
+      "pair": "KERNELUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1775060100,
+      "ts_iso": "2026-04-01T16:15:00+00:00",
+      "net_pct": 0.26302886392445357,
+      "trade_count": 22,
+      "pair": "HOUSEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1775070000,
+      "ts_iso": "2026-04-01T19:00:00+00:00",
+      "net_pct": 0.24187536392445358,
+      "trade_count": 23,
+      "pair": "KERNELUSD",
+      "exit_reason": "STOP_LOSS"
+    },
+    {
+      "ts": 1775196900,
+      "ts_iso": "2026-04-03T06:15:00+00:00",
+      "net_pct": 0.2411205870304122,
+      "trade_count": 24,
+      "pair": "FHEUSD",
+      "exit_reason": "TREND_LOST"
+    },
+    {
+      "ts": 1775270700,
+      "ts_iso": "2026-04-04T02:45:00+00:00",
+      "net_pct": 0.2897500870304122,
+      "trade_count": 25,
+      "pair": "KERNELUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1775597400,
+      "ts_iso": "2026-04-07T21:30:00+00:00",
+      "net_pct": 0.33837958703041215,
+      "trade_count": 26,
+      "pair": "ZECUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1775648700,
+      "ts_iso": "2026-04-08T11:45:00+00:00",
+      "net_pct": 0.38700908703041204,
+      "trade_count": 27,
+      "pair": "HOUSEUSD",
+      "exit_reason": "TAKE_PROFIT"
+    },
+    {
+      "ts": 1775670300,
+      "ts_iso": "2026-04-08T17:45:00+00:00",
+      "net_pct": 0.38700908703041204,
+      "trade_count": 27
+    }
+  ],
+  "recent_trades": [
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1769577300,
+      "entry_ts_iso": "2026-01-28T05:15:00+00:00",
+      "entry_price": 0.144486524,
+      "exit_ts": 1769589000,
+      "exit_ts_iso": "2026-01-28T08:30:00+00:00",
+      "exit_price": 0.15196073964325799,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.04862949999999987,
+      "bars_held": 13,
+      "signal_score": 41.49074877309343
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1769937300,
+      "entry_ts_iso": "2026-02-01T09:15:00+00:00",
+      "entry_price": 0.151989712,
+      "exit_ts": 1769943600,
+      "exit_ts_iso": "2026-02-01T11:00:00+00:00",
+      "exit_price": 0.152416041,
+      "exit_reason": "TREND_LOST",
+      "pnl_pct": -0.00029501409411182306,
+      "bars_held": 7,
+      "signal_score": 29.051713937366145
+    },
+    {
+      "pair": "ZECUSD",
+      "construction": "union_volhi",
+      "entry_ts": 1770999300,
+      "entry_ts_iso": "2026-02-13T16:15:00+00:00",
+      "entry_price": 250.77500000000003,
+      "exit_ts": 1771006500,
+      "exit_ts_iso": "2026-02-13T18:15:00+00:00",
+      "exit_price": 263.7474653625,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.048629499999999895,
+      "bars_held": 8,
+      "signal_score": 49.794601362604595
+    },
+    {
+      "pair": "HOUSEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1771362900,
+      "entry_ts_iso": "2026-02-17T21:15:00+00:00",
+      "entry_price": 0.0011104317,
+      "exit_ts": 1771363800,
+      "exit_ts_iso": "2026-02-17T21:30:00+00:00",
+      "exit_price": 0.0011678737766251499,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.04862949999999982,
+      "bars_held": 1,
+      "signal_score": 59.97746666199979
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1771373700,
+      "entry_ts_iso": "2026-02-18T00:15:00+00:00",
+      "entry_price": 0.043955842,
+      "exit_ts": 1771375500,
+      "exit_ts_iso": "2026-02-18T00:45:00+00:00",
+      "exit_price": 0.043162285206453,
+      "exit_reason": "STOP_LOSS",
+      "pnl_pct": -0.021153499999999992,
+      "bars_held": 2,
+      "signal_score": 55.31980570435326
+    },
+    {
+      "pair": "GIGAUSD",
+      "construction": "tc15_tighter_volume_cap",
+      "entry_ts": 1772037000,
+      "entry_ts_iso": "2026-02-25T16:30:00+00:00",
+      "entry_price": 0.0022248758,
+      "exit_ts": 1772046900,
+      "exit_ts_iso": "2026-02-25T19:15:00+00:00",
+      "exit_price": 0.0022450188,
+      "exit_reason": "TREND_LOST",
+      "pnl_pct": 0.005953539078450944,
+      "bars_held": 11,
+      "signal_score": 47.65313862618262
+    },
+    {
+      "pair": "HOUSEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1772586900,
+      "entry_ts_iso": "2026-03-04T01:15:00+00:00",
+      "entry_price": 0.0019078962000000001,
+      "exit_ts": 1772587800,
+      "exit_ts_iso": "2026-03-04T01:30:00+00:00",
+      "exit_price": 0.0018734519959533002,
+      "exit_reason": "STOP_LOSS",
+      "pnl_pct": -0.021153499999999947,
+      "bars_held": 1,
+      "signal_score": 69.68243606689484
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1772723700,
+      "entry_ts_iso": "2026-03-05T15:15:00+00:00",
+      "entry_price": 0.030464147000000004,
+      "exit_ts": 1772724600,
+      "exit_ts_iso": "2026-03-05T15:30:00+00:00",
+      "exit_price": 0.0320400420922365,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.048629499999999895,
+      "bars_held": 1,
+      "signal_score": 158.18390962526888
+    },
+    {
+      "pair": "BABYUSD",
+      "construction": "tc15_cap_or_mb60",
+      "entry_ts": 1773083700,
+      "entry_ts_iso": "2026-03-09T19:15:00+00:00",
+      "entry_price": 0.015357461000000003,
+      "exit_ts": 1773084600,
+      "exit_ts_iso": "2026-03-09T19:30:00+00:00",
+      "exit_price": 0.015769148457027003,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.023707000000000023,
+      "bars_held": 1,
+      "signal_score": 101.79996526249847
+    },
+    {
+      "pair": "HOUSEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1773105300,
+      "entry_ts_iso": "2026-03-10T01:15:00+00:00",
+      "entry_price": 0.0016962421000000002,
+      "exit_ts": 1773107100,
+      "exit_ts_iso": "2026-03-10T01:45:00+00:00",
+      "exit_price": 0.0017839878557119502,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.048629500000000006,
+      "bars_held": 2,
+      "signal_score": 38.51775505165676
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1773450900,
+      "entry_ts_iso": "2026-03-14T01:15:00+00:00",
+      "entry_price": 0.022459409000000003,
+      "exit_ts": 1773452700,
+      "exit_ts_iso": "2026-03-14T01:45:00+00:00",
+      "exit_price": 0.022053938059618503,
+      "exit_reason": "STOP_LOSS",
+      "pnl_pct": -0.021153499999999992,
+      "bars_held": 2,
+      "signal_score": 48.43506557474523
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1774335600,
+      "entry_ts_iso": "2026-03-24T07:00:00+00:00",
+      "entry_price": 0.018376792000000003,
+      "exit_ts": 1774336500,
+      "exit_ts_iso": "2026-03-24T07:15:00+00:00",
+      "exit_price": 0.018183456,
+      "exit_reason": "TREND_LOST",
+      "pnl_pct": -0.013620661059884786,
+      "bars_held": 1,
+      "signal_score": 30.865490230050394
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1774339200,
+      "entry_ts_iso": "2026-03-24T08:00:00+00:00",
+      "entry_price": 0.018707815000000003,
+      "exit_ts": 1774344600,
+      "exit_ts_iso": "2026-03-24T09:30:00+00:00",
+      "exit_price": 0.019675560916042504,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.04862950000000006,
+      "bars_held": 6,
+      "signal_score": 39.464754076349614
+    },
+    {
+      "pair": "KERNELUSD",
+      "construction": "union_closehi",
+      "entry_ts": 1774959300,
+      "entry_ts_iso": "2026-03-31T12:15:00+00:00",
+      "entry_price": 0.10031000000000001,
+      "exit_ts": 1774960200,
+      "exit_ts_iso": "2026-03-31T12:30:00+00:00",
+      "exit_price": 0.09849905341500001,
+      "exit_reason": "STOP_LOSS",
+      "pnl_pct": -0.021153500000000002,
+      "bars_held": 1,
+      "signal_score": 103.23549270399947
+    },
+    {
+      "pair": "HOUSEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1775051100,
+      "entry_ts_iso": "2026-04-01T13:45:00+00:00",
+      "entry_price": 0.0013732439000000002,
+      "exit_ts": 1775060100,
+      "exit_ts_iso": "2026-04-01T16:15:00+00:00",
+      "exit_price": 0.0014442811203250502,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.0486295,
+      "bars_held": 10,
+      "signal_score": 40.556525863344746
+    },
+    {
+      "pair": "KERNELUSD",
+      "construction": "union_closehi",
+      "entry_ts": 1775067300,
+      "entry_ts_iso": "2026-04-01T18:15:00+00:00",
+      "entry_price": 0.13052337200000003,
+      "exit_ts": 1775070000,
+      "exit_ts_iso": "2026-04-01T19:00:00+00:00",
+      "exit_price": 0.12816696830359803,
+      "exit_reason": "STOP_LOSS",
+      "pnl_pct": -0.021153499999999985,
+      "bars_held": 3,
+      "signal_score": 65.99170462018994
+    },
+    {
+      "pair": "FHEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1775186100,
+      "entry_ts_iso": "2026-04-03T03:15:00+00:00",
+      "entry_price": 0.018707815000000003,
+      "exit_ts": 1775196900,
+      "exit_ts_iso": "2026-04-03T06:15:00+00:00",
+      "exit_price": 0.018751689000000002,
+      "exit_reason": "TREND_LOST",
+      "pnl_pct": -0.0007547768940413778,
+      "bars_held": 12,
+      "signal_score": 26.42285348867585
+    },
+    {
+      "pair": "KERNELUSD",
+      "construction": "union_closehi",
+      "entry_ts": 1775268900,
+      "entry_ts_iso": "2026-04-04T02:15:00+00:00",
+      "entry_price": 0.12355182700000002,
+      "exit_ts": 1775270700,
+      "exit_ts_iso": "2026-04-04T02:45:00+00:00",
+      "exit_price": 0.12994310123479652,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.04862950000000003,
+      "bars_held": 2,
+      "signal_score": 68.73496028953525
+    },
+    {
+      "pair": "ZECUSD",
+      "construction": "union_volhi",
+      "entry_ts": 1775596500,
+      "entry_ts_iso": "2026-04-07T21:15:00+00:00",
+      "entry_price": 285.773159,
+      "exit_ts": 1775597400,
+      "exit_ts_iso": "2026-04-07T21:30:00+00:00",
+      "exit_price": 300.5560616284905,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.048629499999999964,
+      "bars_held": 1,
+      "signal_score": 51.18202738497041
+    },
+    {
+      "pair": "HOUSEUSD",
+      "construction": "trend_gate",
+      "entry_ts": 1775646900,
+      "entry_ts_iso": "2026-04-08T11:15:00+00:00",
+      "entry_price": 0.0016661491,
+      "exit_ts": 1775648700,
+      "exit_ts_iso": "2026-04-08T11:45:00+00:00",
+      "exit_price": 0.0017523381598684498,
+      "exit_reason": "TAKE_PROFIT",
+      "pnl_pct": 0.048629499999999874,
+      "bars_held": 2,
+      "signal_score": 255.67225333019715
+    }
+  ],
+  "older60": {
+    "trades": 9,
+    "net_pct": 0.03982598590588765,
+    "win_rate": 0.3333333333333333,
+    "avg_trade_pct": 0.004425109545098628,
+    "max_dd_pct": -0.0621275538817887
+  },
+  "recent60": {
+    "trades": 18,
+    "net_pct": 0.34718310112452444,
+    "win_rate": 0.6111111111111112,
+    "avg_trade_pct": 0.01928795006247358,
+    "max_dd_pct": -0.042582711726176226
+  }
+}
