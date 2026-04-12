@@ -188,16 +188,31 @@ def run_backtest_frame(
     trades: list[BacktestTrade] = []
     pending_signal: strat.Signal | None = None
 
+    # Pre-extract hot columns as numpy arrays to avoid per-bar pandas overhead.
+    import numpy as np  # already imported at module level but guard here
+    arr_ts           = df["ts"].to_numpy(dtype=np.int64)
+    arr_open         = df["open"].to_numpy(dtype=np.float64)
+    arr_high         = df["high"].to_numpy(dtype=np.float64)
+    arr_low          = df["low"].to_numpy(dtype=np.float64)
+    arr_close        = df["close"].to_numpy(dtype=np.float64)
+    arr_entry_signal = df["entry_signal"].fillna(False).to_numpy(dtype=bool) if "entry_signal" in df.columns else None
+    arr_ema_fast     = df["ema_fast"].to_numpy(dtype=np.float64) if "ema_fast" in df.columns else None
+    arr_mom_medium   = df["momentum_medium"].to_numpy(dtype=np.float64) if "momentum_medium" in df.columns else None
+    arr_trend_str    = df["trend_strength"].to_numpy(dtype=np.float64) if "trend_strength" in df.columns else None
+    arr_pullback     = df["pullback_depth_pct"].to_numpy(dtype=np.float64) if "pullback_depth_pct" in df.columns else None
+    arr_vwap_dist    = df["distance_from_vwap"].to_numpy(dtype=np.float64) if "distance_from_vwap" in df.columns else None
+    arr_compression  = df["compression_ratio"].to_numpy(dtype=np.float64) if "compression_ratio" in df.columns else None
+
+    cost_factor = commission_pct + slippage_pct
+
     for i in range(strategy.min_master_bars, len(df)):
-        window = df.iloc[: i + 1]
-        row = window.iloc[-1]
-        ts = int(row["ts"])
-        close_price = float(row["close"])
-        high_price = float(row["high"])
-        low_price = float(row["low"])
+        ts          = int(arr_ts[i])
+        close_price = arr_close[i]
+        high_price  = arr_high[i]
+        low_price   = arr_low[i]
 
         if pending_signal is not None:
-            entry_price = float(row["open"]) * (1 + commission_pct + slippage_pct)
+            entry_price = arr_open[i] * (1.0 + cost_factor)
             strategy.open_trade(
                 pending_signal,
                 size=1.0,
@@ -217,23 +232,41 @@ def run_backtest_frame(
             exit_price: float | None = None
             if low_price <= strategy.trade.stop_price:
                 exit_reason = "STOP_LOSS"
-                exit_price = strategy.trade.stop_price * (1 - commission_pct - slippage_pct)
+                exit_price = strategy.trade.stop_price * (1.0 - cost_factor)
             elif strategy.trade.target_price is not None and high_price >= strategy.trade.target_price:
                 exit_reason = "TAKE_PROFIT"
-                exit_price = strategy.trade.target_price * (1 - commission_pct - slippage_pct)
+                exit_price = strategy.trade.target_price * (1.0 - cost_factor)
             else:
-                exit_reason = strategy.check_exit(window)
+                # Inline check_exit using pre-extracted arrays — no pandas access in the hot path.
+                strategy.trade.update_best(close_price)
+                max_hold = (
+                    strategy.config.fast_max_hold_bars
+                    if strategy.trade.exit_mode == "fast"
+                    else strategy.config.max_hold_bars
+                )
+                bars_held_now = strategy.trade.bars_held(i)
+                if bars_held_now >= max_hold:
+                    exit_reason = "TIME_LIMIT"
+                elif (
+                    bars_held_now >= strategy.config.min_hold_bars
+                    and arr_ema_fast is not None
+                    and close_price < arr_ema_fast[i]
+                    and arr_mom_medium is not None
+                    and arr_mom_medium[i] < 0
+                ):
+                    exit_reason = "TREND_LOST"
                 if exit_reason:
-                    exit_price = close_price * (1 - commission_pct - slippage_pct)
+                    exit_price = close_price * (1.0 - cost_factor)
 
             if exit_reason and exit_price is not None:
                 closed = strategy.close_trade(i, ts, exit_price, exit_reason)
-                pnl_pct = (closed.realized_pnl_pct() or 0.0) - commission_pct - slippage_pct
+                pnl_pct = (closed.realized_pnl_pct() or 0.0) - cost_factor
+                eb = closed.entry_bar
                 trades.append(
                     BacktestTrade(
                         construction=construction,
                         pair=pair,
-                        entry_bar=closed.entry_bar,
+                        entry_bar=eb,
                         entry_ts=closed.entry_ts,
                         entry_price=closed.entry_price,
                         exit_bar=i,
@@ -244,15 +277,16 @@ def run_backtest_frame(
                         mfe_pct=closed.best_pct,
                         bars_held=closed.bars_held(i),
                         signal_score=closed.signal_score,
-                        trend_strength=float(df.loc[closed.entry_bar, "trend_strength"]),
-                        pullback_depth_pct=float(df.loc[closed.entry_bar, "pullback_depth_pct"]),
-                        distance_from_vwap=float(df.loc[closed.entry_bar, "distance_from_vwap"]),
-                        compression_ratio=float(df.loc[closed.entry_bar, "compression_ratio"]),
+                        trend_strength=float(arr_trend_str[eb]) if arr_trend_str is not None else 0.0,
+                        pullback_depth_pct=float(arr_pullback[eb]) if arr_pullback is not None else 0.0,
+                        distance_from_vwap=float(arr_vwap_dist[eb]) if arr_vwap_dist is not None else 0.0,
+                        compression_ratio=float(arr_compression[eb]) if arr_compression is not None else 0.0,
                     )
                 )
             continue
 
-        if bool(row.get("entry_signal", False)) and i + 1 < len(df):
+        has_signal = bool(arr_entry_signal[i]) if arr_entry_signal is not None else False
+        if has_signal and i + 1 < len(df):
             signal = strat.build_ensemble_signal(
                 pair,
                 df,

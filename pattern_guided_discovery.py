@@ -72,9 +72,13 @@ def is_shadow_eligible(
     return False
 
 
+def _safe_run_id(run_id: str) -> str:
+    return run_id.replace(":", "-")
+
+
 def run_discovery(run_id: str | None = None) -> dict[str, Any]:
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    run_dir = RESULTS_DIR / "research_runs" / run_id
+    run_dir = RESULTS_DIR / "research_runs" / _safe_run_id(run_id)
     latest_dir = RESULTS_DIR / "latest"
 
     def _load(fname: str) -> Any:

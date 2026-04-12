@@ -127,8 +127,50 @@ def screen_pair(
 
     candidates: list[dict[str, Any]] = []
 
+    # Cache frames per (construction, entry_filter).
+    # build_ensemble_frame is the expensive step; config_for_plan only changes
+    # exit params (min_stop_pct, target_pct, max_hold_bars) which are not used
+    # during feature computation — so the frame is identical across exit_profiles.
+    # This reduces frame builds from 400 → 80 per pair.
+    frame_cache: dict[tuple[str, str], pd.DataFrame] = {}
+
     for construction in CONSTRUCTIONS:
+        # Build base ensemble frame once per construction using default exit config.
+        base_dummy = PairResearchPlan(
+            pair=pair,
+            construction=construction,
+            entry_filter="base",
+            exit_profile="base",
+            status="candidate",
+            note="screener candidate",
+        )
+        try:
+            base_frame = strat.build_ensemble_frame(
+                df_raw, construction=construction, config=rr.config_for_plan(base_dummy)
+            )
+        except Exception:
+            continue
+        if base_frame.empty:
+            continue
+
         for entry_filter in ENTRY_FILTERS:
+            key = (construction, entry_filter)
+            if key not in frame_cache:
+                try:
+                    filtered = base_frame.copy()
+                    filtered["entry_signal_pre_regime"] = rr.apply_entry_filter(filtered, entry_filter)
+                    filtered["portfolio_regime_ok"]     = rr.apply_portfolio_regime_gate(filtered)
+                    filtered["entry_signal"]            = (
+                        filtered["entry_signal_pre_regime"] & filtered["portfolio_regime_ok"]
+                    )
+                    frame_cache[key] = rr.add_weak_regime_features(filtered)
+                except Exception:
+                    frame_cache[key] = pd.DataFrame()
+
+            frame = frame_cache[key]
+            if frame.empty:
+                continue
+
             for exit_profile in EXIT_PROFILES:
                 try:
                     fake_plan = PairResearchPlan(
@@ -139,9 +181,6 @@ def screen_pair(
                         status="candidate",
                         note="screener candidate",
                     )
-                    frame = rr.build_research_frame(df_raw, fake_plan)
-                    if frame.empty:
-                        continue
                     config = rr.config_for_plan(fake_plan)
                     trades = bt.run_backtest_frame(
                         pair=pair,
@@ -201,9 +240,14 @@ def screen_pair(
     return candidates[:top_k]
 
 
+def _safe_run_id(run_id: str) -> str:
+    """Sanitize run_id for use as a Windows directory name (colons → hyphens)."""
+    return run_id.replace(":", "-")
+
+
 def run_screener(history_days: int, top_k: int = TOP_K, run_id: str | None = None) -> dict[str, Any]:
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    run_dir = RESULTS_DIR / "research_runs" / run_id
+    run_dir = RESULTS_DIR / "research_runs" / _safe_run_id(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     all_candidates: list[dict[str, Any]] = []
@@ -224,7 +268,7 @@ def run_screener(history_days: int, top_k: int = TOP_K, run_id: str | None = Non
     latest_dir.mkdir(parents=True, exist_ok=True)
     (latest_dir / "older60_candidates.json").write_text(json.dumps(output, indent=2), encoding="utf-8")
 
-    print(f"\nolder60_screener: {len(paths)} pairs → {len(all_candidates)} candidates → {out_path}")
+    print(f"\nolder60_screener: {len(paths)} pairs -> {len(all_candidates)} candidates -> {out_path}")
     return output
 
 
